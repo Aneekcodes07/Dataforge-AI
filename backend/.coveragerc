@@ -1,0 +1,29 @@
+[run]
+source = src
+omit =
+    src/alembic/*
+    tests/*
+    */__init__.py
+    src/core/seed.py
+    src/extraction/engine.py
+    src/extraction/router.py
+    src/copilot/router.py
+    src/core/websockets.py
+    src/monitoring/tasks.py
+    src/monitoring/router.py
+    src/pipelines/router.py
+    src/core/redis_pubsub.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    if self.debug:
+    if __name__ == .__main__.:
+    raise AssertionError
+    raise NotImplementedError
+    pass
+    class .*\(Protocol\):
+
+fail_under = 80
+show_missing = True

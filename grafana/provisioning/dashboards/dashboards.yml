@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: 'DataForge Dashboards'
+    orgId: 1
+    folder: 'DataForge AI'
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/dashboards

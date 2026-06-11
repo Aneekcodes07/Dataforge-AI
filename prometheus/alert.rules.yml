@@ -1,0 +1,72 @@
+groups:
+  - name: dataforge-alerts
+    rules:
+      # 1. API High Error Rate Alert (>5% of requests return 5xx over a 2m window)
+      - alert: HighErrorRate
+        expr: sum(rate(http_requests_total{status=~"5.."}[2m])) / sum(rate(http_requests_total[2m])) * 100 > 5
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High API Error Rate Detected on {{ $labels.instance }}"
+          description: "API HTTP 5xx responses represent {{ $value | printf \"%.2f\" }}% of all requests in the last 2 minutes."
+
+      # 2. API Backend Offline Alert
+      - alert: BackendOffline
+        expr: up{job="backend"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "API Backend Service Offline"
+          description: "FastAPI server target is down and cannot be scraped by Prometheus."
+
+      # 3. Database Offline Alert (via health status metric)
+      - alert: DatabaseOffline
+        expr: service_health_status{service_name="database"} == 0
+        for: 15s
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL Database Offline"
+          description: "The backend application reports database connection check failed."
+
+      # 4. Redis Offline Alert (via health status metric)
+      - alert: RedisOffline
+        expr: service_health_status{service_name="redis"} == 0
+        for: 15s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis Cache/Broker Offline"
+          description: "The backend application reports Redis connection check failed."
+
+      # 5. Celery Worker Offline Alert
+      - alert: WorkerOffline
+        expr: service_health_status{service_name="celery"} == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No Celery Workers Active"
+          description: "The backend application reports that no active Celery worker nodes responded to inspect ping."
+
+      # 6. Pipeline execution failures alert (pipeline run status is failed)
+      - alert: PipelineFailures
+        expr: rate(pipeline_runs_total{status="failed"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pipeline Execution Failures Occurred"
+          description: "Pipeline runs are transitioning to failed state (rate of failures over last 5m: {{ $value | printf \"%.2f\" }}/s)."
+
+      # 7. WebSocket Failures / High Disconnection rate
+      - alert: WebSocketFailures
+        expr: rate(http_requests_total{endpoint="/api/ws", status="500"}[2m]) > 0.05
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High WebSocket Handshake Failure Rate"
+          description: "WebSocket connection handshakes are failing with 500 status codes (rate: {{ $value }}/s)."

@@ -1,0 +1,85 @@
+name: Integration Tests CI
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/integration-tests.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/integration-tests.yml'
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  integration-tests:
+    name: Service Integration Tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: dataforge_ai
+          POSTGRES_USER: dataforge
+          POSTGRES_PASSWORD: secure_pass
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Verify Database Migrations
+        env:
+          DATABASE_URL: postgresql://dataforge:secure_pass@localhost:5432/dataforge_ai
+        run: |
+          alembic upgrade head
+
+      - name: Run Integration Tests
+        env:
+          DATABASE_URL: postgresql://dataforge:secure_pass@localhost:5432/dataforge_ai
+          REDIS_URL: redis://localhost:6379/0
+          PYTHONPATH: .
+        run: |
+          python -m pytest --cov=src --cov-config=.coveragerc --cov-report=xml --cov-report=term-missing tests/
+
+      - name: Upload Integration Coverage Reports
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: integration-coverage-report
+          path: backend/coverage.xml
+          retain-days: 7

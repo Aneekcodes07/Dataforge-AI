@@ -1,0 +1,31 @@
+global:
+  scrape_interval: 10s      # Default scrape interval for targets
+  evaluation_interval: 10s  # Interval to evaluate alerting rules
+
+# Load and evaluate alerting rules
+rule_files:
+  - "alert.rules.yml"
+
+# Alertmanager configuration (receives triggers from Prometheus)
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets:
+#             - "alertmanager:9093"
+
+scrape_configs:
+  # 1. Self monitoring
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # 2. FastAPI Backend & Instrumentation metrics
+  - job_name: "backend"
+    metrics_path: "/api/monitoring/metrics"
+    static_configs:
+      - targets: ["backend:8000"]
+
+  # 3. System Host Metrics Exporter
+  - job_name: "node-exporter"
+    static_configs:
+      - targets: ["node-exporter:9100"]
