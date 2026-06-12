@@ -88,15 +88,15 @@ jobs:
 
       - name: Upload Build Log
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: frontend-build-log
           path: frontend/build.log
-          retain-days: 7
+          retention-days: 7
 
       - name: Upload Dist Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: frontend-dist
           path: frontend/dist
-          retain-days: 7
+          retention-days: 7
