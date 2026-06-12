@@ -19,11 +19,7 @@ sync_redis = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
 def publish_ws_event(room: str, event_type: str, payload: dict):
     """Publish a workspace or user event to the global FastAPI WebSocket bridge."""
     try:
-        message = {
-            "room": room,
-            "event": event_type,
-            "data": payload
-        }
+        message = {"room": room, "event": event_type, "data": payload}
         sync_redis.publish("dataforge_ws_broadcast", json.dumps(message))
     except Exception as e:
         logger.error(f"Failed to publish WebSocket event to Redis: {e}")
@@ -56,6 +52,8 @@ async def redis_pubsub_listener():
                     if room and event:
                         await ws_manager.broadcast_to_room(room, event, data)
                 except Exception as parse_err:
-                    logger.error(f"Failed to parse Pub/Sub broadcast payload: {parse_err}")
+                    logger.error(
+                        f"Failed to parse Pub/Sub broadcast payload: {parse_err}"
+                    )
     except Exception as e:
         logger.error(f"Redis Pub/Sub listener encountered critical error: {e}")

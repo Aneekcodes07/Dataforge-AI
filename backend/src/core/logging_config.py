@@ -10,8 +10,10 @@ from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from celery.signals import after_setup_logger, after_setup_task_logger
 
+
 class JSONFormatter(logging.Formatter):
     """Formats log records as JSON objects for structured logging in production."""
+
     def format(self, record):
         log_data = {
             "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -21,13 +23,14 @@ class JSONFormatter(logging.Formatter):
         }
         if record.exc_info:
             log_data["exception"] = self.formatException(record.exc_info)
-        
+
         # Pull extra attributes if present
         for attr in ("method", "path", "status_code", "duration_ms", "client_ip"):
             if hasattr(record, attr):
                 log_data[attr] = getattr(record, attr)
-                
+
         return json.dumps(log_data)
+
 
 def setup_logging():
     """Configure system loggers to output structured JSON format."""
@@ -35,7 +38,7 @@ def setup_logging():
     # Replace handlers on root logger
     for handler in list(root_logger.handlers):
         root_logger.removeHandler(handler)
-    
+
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(JSONFormatter())
     root_logger.addHandler(console_handler)
@@ -52,6 +55,7 @@ def setup_logging():
         logger.setLevel(logging.INFO)
         logger.propagate = False
 
+
 # Celery specific signal handlers to configure JSON formatters inside workers
 @after_setup_logger.connect
 def setup_celery_logger(logger, *args, **kwargs):
@@ -61,6 +65,7 @@ def setup_celery_logger(logger, *args, **kwargs):
     handler.setFormatter(JSONFormatter())
     logger.addHandler(handler)
 
+
 @after_setup_task_logger.connect
 def setup_celery_task_logger(logger, *args, **kwargs):
     for handler in list(logger.handlers):
@@ -69,20 +74,22 @@ def setup_celery_task_logger(logger, *args, **kwargs):
     handler.setFormatter(JSONFormatter())
     logger.addHandler(handler)
 
+
 class StructuredLoggingMiddleware(BaseHTTPMiddleware):
     """FastAPI Middleware to capture request details and log them as structured JSON."""
+
     async def dispatch(self, request: Request, call_next):
         start_time = time.time()
         client_ip = request.client.host if request.client else "unknown"
-        
+
         # Don't log health check endpoints to avoid database connection polling log spam
         if request.url.path in ("/api/health", "/api/health/ws"):
             return await call_next(request)
-            
+
         try:
             response = await call_next(request)
             process_time = (time.time() - start_time) * 1000
-            
+
             logger = logging.getLogger("uvicorn.access")
             logger.info(
                 f"{request.method} {request.url.path} - {response.status_code} ({process_time:.2f}ms)",
@@ -91,8 +98,8 @@ class StructuredLoggingMiddleware(BaseHTTPMiddleware):
                     "path": request.url.path,
                     "status_code": response.status_code,
                     "duration_ms": round(process_time, 2),
-                    "client_ip": client_ip
-                }
+                    "client_ip": client_ip,
+                },
             )
             return response
         except Exception as e:
@@ -106,7 +113,7 @@ class StructuredLoggingMiddleware(BaseHTTPMiddleware):
                     "path": request.url.path,
                     "status_code": 500,
                     "duration_ms": round(process_time, 2),
-                    "client_ip": client_ip
-                }
+                    "client_ip": client_ip,
+                },
             )
             raise e

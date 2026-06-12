@@ -2,7 +2,7 @@
 Monitoring Pydantic validation schemas.
 """
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 from datetime import datetime
 from typing import Optional

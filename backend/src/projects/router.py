@@ -18,24 +18,30 @@ router = APIRouter()
 
 @router.get("/", response_model=list[ProjectResponse])
 def list_projects(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
     """Retrieve all datasets in the user's active workspace context."""
-    membership = db.query(WorkspaceMembership).filter(WorkspaceMembership.user_id == current_user.id).first()
+    membership = (
+        db.query(WorkspaceMembership)
+        .filter(WorkspaceMembership.user_id == current_user.id)
+        .first()
+    )
     if not membership:
         return []
 
-    datasets = db.query(Dataset).filter(Dataset.workspace_id == membership.workspace_id).order_index = Dataset.created_at.desc()
-    # Or just order by updated_at or created_at
-    datasets = db.query(Dataset).filter(Dataset.workspace_id == membership.workspace_id).order_by(Dataset.created_at.desc()).all()
+    datasets = (
+        db.query(Dataset)
+        .filter(Dataset.workspace_id == membership.workspace_id)
+        .order_by(Dataset.created_at.desc())
+        .all()
+    )
 
     return [
         ProjectResponse(
             id=str(d.id),
             name=d.name,
             source_type=d.source_type or "url",
-            status=d.status.lower(), # frontend expects 'completed', 'in_progress', etc.
+            status=d.status.lower(),  # frontend expects 'completed', 'in_progress', etc.
             row_count=d.record_count,
             column_count=d.column_count,
             quality_score=float(d.quality_score),
@@ -49,10 +55,14 @@ def list_projects(
 def create_project(
     project: ProjectCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Create a new dataset record and ingestion pipeline specification."""
-    membership = db.query(WorkspaceMembership).filter(WorkspaceMembership.user_id == current_user.id).first()
+    membership = (
+        db.query(WorkspaceMembership)
+        .filter(WorkspaceMembership.user_id == current_user.id)
+        .first()
+    )
     if not membership:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -85,7 +95,7 @@ def create_project(
         owner_id=current_user.id,
     )
     db.add(pipeline)
-    
+
     db.commit()
     db.refresh(dataset)
 
@@ -105,10 +115,14 @@ def create_project(
 def delete_project(
     project_id: str,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Delete database records for the selected dataset."""
-    membership = db.query(WorkspaceMembership).filter(WorkspaceMembership.user_id == current_user.id).first()
+    membership = (
+        db.query(WorkspaceMembership)
+        .filter(WorkspaceMembership.user_id == current_user.id)
+        .first()
+    )
     if not membership:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -117,6 +131,7 @@ def delete_project(
 
     # Find the dataset
     import uuid
+
     try:
         project_uuid = uuid.UUID(project_id)
     except ValueError:
@@ -125,10 +140,13 @@ def delete_project(
             detail="Invalid dataset ID format",
         )
 
-    dataset = db.query(Dataset).filter(
-        Dataset.id == project_uuid,
-        Dataset.workspace_id == membership.workspace_id
-    ).first()
+    dataset = (
+        db.query(Dataset)
+        .filter(
+            Dataset.id == project_uuid, Dataset.workspace_id == membership.workspace_id
+        )
+        .first()
+    )
 
     if not dataset:
         raise HTTPException(
@@ -138,5 +156,5 @@ def delete_project(
 
     db.delete(dataset)
     db.commit()
-    
+
     return {"status": "success", "message": "Dataset and linked configurations deleted"}

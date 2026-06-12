@@ -12,7 +12,14 @@ logger = logging.getLogger(__name__)
 
 
 @celery_app.task(name="process_notification_task", bind=True, max_retries=3)
-def process_notification_task(self, user_id: str, title: str, content: str, notif_type: str = "info", link: str = None):
+def process_notification_task(
+    self,
+    user_id: str,
+    title: str,
+    content: str,
+    notif_type: str = "info",
+    link: str | None = None,
+):
     """Processes system notification creation in background."""
     logger.info(f"Processing notification for user: {user_id}")
     db = SessionLocal()
@@ -23,7 +30,7 @@ def process_notification_task(self, user_id: str, title: str, content: str, noti
             title=title,
             content=content,
             link=link,
-            is_read=False
+            is_read=False,
         )
         db.add(notification)
         db.commit()
@@ -38,7 +45,13 @@ def process_notification_task(self, user_id: str, title: str, content: str, noti
 
 
 @celery_app.task(name="log_activity_task", bind=True, max_retries=3)
-def log_activity_task(self, workspace_id: str, event_type: str, description: str, user_id: str = None):
+def log_activity_task(
+    self,
+    workspace_id: str,
+    event_type: str,
+    description: str,
+    user_id: str | None = None,
+):
     """Saves and dispatches system activity events in background."""
     logger.info(f"Logging activity feed event for workspace: {workspace_id}")
     db = SessionLocal()
@@ -47,7 +60,7 @@ def log_activity_task(self, workspace_id: str, event_type: str, description: str
             workspace_id=uuid.UUID(workspace_id),
             user_id=uuid.UUID(user_id) if user_id else None,
             event_type=event_type,
-            description=description
+            description=description,
         )
         db.add(activity)
         db.commit()

@@ -9,7 +9,7 @@ class LoginRequest(BaseModel):
     email: EmailStr = Field(..., description="User email address")
     password: str = Field(..., min_length=1, description="User password")
 
-    @field_validator('password')
+    @field_validator("password")
     @classmethod
     def validate_password_not_empty(cls, v: str) -> str:
         if not v or not v.strip():
@@ -20,16 +20,18 @@ class LoginRequest(BaseModel):
 class SignupRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=255, description="User full name")
     email: EmailStr = Field(..., description="User email address")
-    password: str = Field(..., min_length=8, description="Password must be at least 8 characters")
+    password: str = Field(
+        ..., min_length=8, description="Password must be at least 8 characters"
+    )
 
-    @field_validator('name')
+    @field_validator("name")
     @classmethod
     def validate_name(cls, v: str) -> str:
         if not v or not v.strip():
             raise ValueError("Name cannot be empty")
         return v.strip()
 
-    @field_validator('password')
+    @field_validator("password")
     @classmethod
     def validate_password_strength(cls, v: str) -> str:
         if len(v) < 8:

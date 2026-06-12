@@ -5,7 +5,7 @@ AI Copilot Pydantic schemas.
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 from datetime import datetime
-from typing import Optional, Any
+from typing import Optional
 
 
 class CopilotSessionResponse(BaseModel):

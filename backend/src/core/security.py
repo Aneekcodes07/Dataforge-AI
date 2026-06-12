@@ -22,15 +22,12 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, hashed_password: str) -> bool:
     """Verify clean text password against its bcrypt hash."""
     try:
-        return bcrypt.checkpw(
-            password.encode("utf-8"),
-            hashed_password.encode("utf-8")
-        )
+        return bcrypt.checkpw(password.encode("utf-8"), hashed_password.encode("utf-8"))
     except Exception:
         return False
 
 
-def create_access_token(data: dict, expires_delta: timedelta = None) -> str:
+def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
     """Generate JWT Access Token."""
     to_encode = data.copy()
     if expires_delta:
@@ -42,7 +39,7 @@ def create_access_token(data: dict, expires_delta: timedelta = None) -> str:
     return encoded_jwt
 
 
-def create_refresh_token(data: dict, expires_delta: timedelta = None) -> str:
+def create_refresh_token(data: dict, expires_delta: timedelta | None = None) -> str:
     """Generate JWT Refresh Token."""
     to_encode = data.copy()
     if expires_delta:
@@ -56,10 +53,10 @@ def create_refresh_token(data: dict, expires_delta: timedelta = None) -> str:
 
 def decode_token(token: str) -> dict:
     """Decode JWT token and verify validity.
-    
+
     Returns:
         dict: The decoded token payload.
-    
+
     Raises:
         jwt.ExpiredSignatureError: If token expired.
         jwt.InvalidTokenError: If token is malformed or signature fails verification.

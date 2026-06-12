@@ -16,24 +16,31 @@ logger = logging.getLogger(__name__)
 
 
 @celery_app.task(name="run_copilot_query_task", bind=True, max_retries=3)
-def run_copilot_query_task(self, user_id: str, workspace_id: str, session_id: str, query: str):
+def run_copilot_query_task(
+    self, user_id: str, workspace_id: str, session_id: str, query: str
+):
     """Processes Copilot LLM query in worker, saves dialogue to database, and streams token frames via Pub/Sub."""
-    logger.info(f"Running Copilot query task for session: {session_id}, user: {user_id}")
+    logger.info(
+        f"Running Copilot query task for session: {session_id}, user: {user_id}"
+    )
     db = SessionLocal()
     try:
         session_uuid = uuid.UUID(session_id)
         user_uuid = uuid.UUID(user_id)
 
-        session = db.query(CopilotSession).filter(
-            CopilotSession.id == session_uuid,
-            CopilotSession.user_id == user_uuid
-        ).first()
+        session = (
+            db.query(CopilotSession)
+            .filter(
+                CopilotSession.id == session_uuid, CopilotSession.user_id == user_uuid
+            )
+            .first()
+        )
 
         if not session:
             publish_ws_event(
                 room=f"user:{user_id}",
                 event_type="copilot.streaming",
-                payload={"error": "Session not found", "done": True}
+                payload={"error": "Session not found", "done": True},
             )
             return {"status": "failed", "error": "Session not found"}
 
@@ -78,8 +85,8 @@ def run_copilot_query_task(self, user_id: str, workspace_id: str, session_id: st
                     "text": current_text,
                     "done": False,
                     "cardType": card_type,
-                    "cardData": card_data
-                }
+                    "cardData": card_data,
+                },
             )
             time.sleep(0.04)
 
@@ -93,8 +100,8 @@ def run_copilot_query_task(self, user_id: str, workspace_id: str, session_id: st
                 "text": text,
                 "done": True,
                 "cardType": card_type,
-                "cardData": card_data
-            }
+                "cardData": card_data,
+            },
         )
 
         return {"status": "success", "message_id": str(ai_msg.id)}
@@ -105,7 +112,7 @@ def run_copilot_query_task(self, user_id: str, workspace_id: str, session_id: st
         publish_ws_event(
             room=f"user:{user_id}",
             event_type="copilot.streaming",
-            payload={"error": str(exc), "done": True}
+            payload={"error": str(exc), "done": True},
         )
         raise self.retry(exc=exc, countdown=5)
     finally:

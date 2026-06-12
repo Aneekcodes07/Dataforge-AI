@@ -11,10 +11,6 @@ import json
 from src.core.database import Base, engine, get_db
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 # Import all models to register them on Base.metadata
-from src.auth.models import User, Workspace, WorkspaceMembership, Team, APIKey, CopilotSession, CopilotMessage
-from src.datasets.models import Dataset
-from src.pipelines.models import Pipeline, PipelineRun
-from src.monitoring.models import AgentMetrics, Notification, ActivityLog, AuditEvent
 
 from src.auth.router import router as auth_router
 from src.projects.router import router as projects_router
@@ -25,7 +21,11 @@ from src.copilot.router import router as copilot_router, handle_copilot_stream
 from src.core.websockets import ws_manager
 from src.core.redis_pubsub import redis_pubsub_listener
 from src.core.logging_config import setup_logging, StructuredLoggingMiddleware
-from src.core.observability import init_sentry, PrometheusMetricsMiddleware, WEBSOCKET_CONNECTIONS_ACTIVE
+from src.core.observability import (
+    init_sentry,
+    PrometheusMetricsMiddleware,
+    WEBSOCKET_CONNECTIONS_ACTIVE,
+)
 from src.core.config import get_settings
 
 
@@ -35,6 +35,7 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     # Start background Redis Pub/Sub WebSocket bridge
     import asyncio
+
     listener_task = asyncio.create_task(redis_pubsub_listener())
     yield
     # Clean up background task on exit
@@ -50,11 +51,16 @@ def create_app() -> FastAPI:
     setup_logging()
     # Initialize Sentry error reporting and performance tracking
     init_sentry()
-    
+
     settings = get_settings()
     # Startup validation checking for default developer keys in production
-    if not settings.DEBUG and settings.SECRET_KEY == "dev-secret-key-change-in-production":
-        raise RuntimeError("CRITICAL SECURITY ERROR: SECRET_KEY must be changed in production environments.")
+    if (
+        not settings.DEBUG
+        and settings.SECRET_KEY == "dev-secret-key-change-in-production"
+    ):
+        raise RuntimeError(
+            "CRITICAL SECURITY ERROR: SECRET_KEY must be changed in production environments."
+        )
 
     app = FastAPI(
         title="DataForge AI",
@@ -93,24 +99,25 @@ def create_app() -> FastAPI:
         from src.core.redis_pubsub import sync_redis
         from src.celery_app import celery_app
         from src.core.observability import SERVICE_HEALTH_STATUS
-        
+
         status_details = {
             "backend": "ok",
             "database": "unknown",
             "redis": "unknown",
-            "celery": "unknown"
+            "celery": "unknown",
         }
-        
+
         # 1. Database Check
         try:
             from sqlalchemy import text
+
             db.execute(text("SELECT 1"))
             status_details["database"] = "ok"
             SERVICE_HEALTH_STATUS.labels(service_name="database").set(1)
         except Exception as e:
             status_details["database"] = f"error: {str(e)}"
             SERVICE_HEALTH_STATUS.labels(service_name="database").set(0)
-            
+
         # 2. Redis Check
         try:
             if sync_redis.ping():
@@ -122,7 +129,7 @@ def create_app() -> FastAPI:
         except Exception as e:
             status_details["redis"] = f"error: {str(e)}"
             SERVICE_HEALTH_STATUS.labels(service_name="redis").set(0)
-            
+
         # 3. Celery Check
         try:
             # Send a fast ping control command (0.5s timeout) to workers
@@ -136,17 +143,17 @@ def create_app() -> FastAPI:
         except Exception as e:
             status_details["celery"] = f"error: {str(e)}"
             SERVICE_HEALTH_STATUS.labels(service_name="celery").set(0)
-            
+
         # Overall health calculation
         overall_status = "ok"
         if any(v != "ok" for v in status_details.values()):
             overall_status = "degraded"
-            
+
         return {
             "status": overall_status,
             "version": "0.1.0",
             "service": "dataforge-ai",
-            "details": status_details
+            "details": status_details,
         }
 
     @app.websocket("/api/health/ws")
@@ -179,7 +186,7 @@ def create_app() -> FastAPI:
 
         user_id, workspace_id = auth_res
         room_label = f"workspace:{workspace_id}"
-        
+
         # Increment active WebSockets counter
         WEBSOCKET_CONNECTIONS_ACTIVE.labels(room=room_label).inc()
 
@@ -195,27 +202,38 @@ def create_app() -> FastAPI:
                     event = payload.get("event")
                     if event == "ping":
                         await websocket.send_json({"event": "pong"})
-                    elif event == "copilot.query" or payload.get("type") == "copilot.query":
+                    elif (
+                        event == "copilot.query"
+                        or payload.get("type") == "copilot.query"
+                    ):
                         # Support camelCase and snake_case keys
-                        session_id = payload.get("sessionId") or payload.get("session_id")
+                        session_id = payload.get("sessionId") or payload.get(
+                            "session_id"
+                        )
                         query_text = payload.get("text")
                         if session_id and query_text:
                             import asyncio
+
                             asyncio.create_task(
-                                handle_copilot_stream(user_id, workspace_id, session_id, query_text, websocket)
+                                handle_copilot_stream(
+                                    user_id,
+                                    workspace_id,
+                                    session_id,
+                                    query_text,
+                                    websocket,
+                                )
                             )
-                except Exception as json_err:
+                except Exception:
                     pass
         except WebSocketDisconnect:
             ws_manager.disconnect(websocket)
-        except Exception as e:
+        except Exception:
             ws_manager.disconnect(websocket)
         finally:
             # Decrement active WebSockets counter on client disconnect
             WEBSOCKET_CONNECTIONS_ACTIVE.labels(room=room_label).dec()
 
     return app
-
 
 
 app = create_app()

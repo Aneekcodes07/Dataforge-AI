@@ -18,15 +18,22 @@ router = APIRouter()
 
 @router.get("/", response_model=list[PipelineResponse])
 def list_pipelines(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
     """Retrieve all pipeline configs in user's active workspace."""
-    membership = db.query(WorkspaceMembership).filter(WorkspaceMembership.user_id == current_user.id).first()
+    membership = (
+        db.query(WorkspaceMembership)
+        .filter(WorkspaceMembership.user_id == current_user.id)
+        .first()
+    )
     if not membership:
         return []
 
-    pipelines = db.query(Pipeline).filter(Pipeline.workspace_id == membership.workspace_id).all()
+    pipelines = (
+        db.query(Pipeline)
+        .filter(Pipeline.workspace_id == membership.workspace_id)
+        .all()
+    )
     return [
         PipelineResponse(
             id=str(p.id),
@@ -48,10 +55,14 @@ def list_pipelines(
 def create_pipeline(
     payload: PipelineCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Register a new pipeline specification."""
-    membership = db.query(WorkspaceMembership).filter(WorkspaceMembership.user_id == current_user.id).first()
+    membership = (
+        db.query(WorkspaceMembership)
+        .filter(WorkspaceMembership.user_id == current_user.id)
+        .first()
+    )
     if not membership:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -88,18 +99,25 @@ def create_pipeline(
 
 @router.get("/runs", response_model=list[PipelineRunResponse])
 def list_runs(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
 ):
     """Retrieve history of all execution runs within user's workspace."""
-    membership = db.query(WorkspaceMembership).filter(WorkspaceMembership.user_id == current_user.id).first()
+    membership = (
+        db.query(WorkspaceMembership)
+        .filter(WorkspaceMembership.user_id == current_user.id)
+        .first()
+    )
     if not membership:
         return []
 
     # Get runs belonging to pipelines in user's workspace
-    runs = db.query(PipelineRun).join(Pipeline).filter(
-        Pipeline.workspace_id == membership.workspace_id
-    ).order_by(PipelineRun.created_at.desc()).all()
+    runs = (
+        db.query(PipelineRun)
+        .join(Pipeline)
+        .filter(Pipeline.workspace_id == membership.workspace_id)
+        .order_by(PipelineRun.created_at.desc())
+        .all()
+    )
 
     return [
         PipelineRunResponse(
@@ -123,23 +141,38 @@ def list_runs(
 def trigger_pipeline(
     pipeline_id: str,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Manually enqueue an ingestion run task."""
     try:
         pipeline_uuid = uuid.UUID(pipeline_id)
     except ValueError:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid pipeline ID format")
-    membership = db.query(WorkspaceMembership).filter(WorkspaceMembership.user_id == current_user.id).first()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid pipeline ID format"
+        )
+    membership = (
+        db.query(WorkspaceMembership)
+        .filter(WorkspaceMembership.user_id == current_user.id)
+        .first()
+    )
     if not membership:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User does not belong to any workspace")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User does not belong to any workspace",
+        )
 
-    pipeline = db.query(Pipeline).filter(
-        Pipeline.id == pipeline_uuid,
-        Pipeline.workspace_id == membership.workspace_id
-    ).first()
+    pipeline = (
+        db.query(Pipeline)
+        .filter(
+            Pipeline.id == pipeline_uuid,
+            Pipeline.workspace_id == membership.workspace_id,
+        )
+        .first()
+    )
     if not pipeline:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Pipeline not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Pipeline not found"
+        )
 
     # Initialize and queue run in Celery
     run = PipelineRun(
@@ -154,6 +187,7 @@ def trigger_pipeline(
 
     # Queue the Celery task
     from src.agents.tasks import run_extraction_pipeline_task
+
     run_extraction_pipeline_task.delay(str(run.id), str(pipeline.dataset_id))
 
     return PipelineRunResponse(

@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     DEBUG: bool = True
 
     # Server
-    HOST: str = "0.0.0.0"
+    HOST: str = "0.0.0.0"  # nosec B104
     PORT: int = 8000
 
     # Authentication
@@ -36,9 +36,7 @@ class Settings(BaseSettings):
     POSTGRES_HOST: str = "postgres"
     POSTGRES_PORT: int = 5432
 
-    DATABASE_URL: str = (
-        "postgresql://dataforge:secure_pass@postgres:5432/dataforge_ai"
-    )
+    DATABASE_URL: str = "postgresql://dataforge:secure_pass@postgres:5432/dataforge_ai"
 
     # Redis
     REDIS_URL: str = "redis://redis:6379/0"
@@ -61,4 +59,4 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     """Return cached settings instance."""
-    return Settings()   
+    return Settings()

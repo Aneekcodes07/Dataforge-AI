@@ -14,12 +14,15 @@ from src.auth.models import WorkspaceMembership
 router = APIRouter()
 settings = get_settings()
 
+
 @router.websocket("/ws/{project_id}")
 async def websocket_endpoint(websocket: WebSocket, project_id: str):
     token = websocket.query_params.get("token")
     if not token:
         await websocket.accept()
-        await websocket.send_json({"type": "failed", "message": "Authentication token missing"})
+        await websocket.send_json(
+            {"type": "failed", "message": "Authentication token missing"}
+        )
         await websocket.close(code=4008)
         return
 
@@ -29,35 +32,47 @@ async def websocket_endpoint(websocket: WebSocket, project_id: str):
         token_type = payload.get("type")
         if not user_id or token_type != "access":
             await websocket.accept()
-            await websocket.send_json({"type": "failed", "message": "Invalid authentication token"})
+            await websocket.send_json(
+                {"type": "failed", "message": "Invalid authentication token"}
+            )
             await websocket.close(code=4008)
             return
     except Exception as e:
         await websocket.accept()
-        await websocket.send_json({"type": "failed", "message": f"Authentication failed: {str(e)}"})
+        await websocket.send_json(
+            {"type": "failed", "message": f"Authentication failed: {str(e)}"}
+        )
         await websocket.close(code=4008)
         return
 
     await websocket.accept()
-    
+
     db = SessionLocal()
     pubsub = None
     try:
         project_uuid = uuid.UUID(project_id)
         dataset = db.query(Dataset).filter(Dataset.id == project_uuid).first()
         if not dataset:
-            await websocket.send_json({"type": "failed", "message": "Dataset configuration not found"})
+            await websocket.send_json(
+                {"type": "failed", "message": "Dataset configuration not found"}
+            )
             await websocket.close()
             return
 
         # Verify that user belongs to the workspace owning this project (BOLA fix)
         user_uuid = uuid.UUID(user_id)
-        membership = db.query(WorkspaceMembership).filter(
-            WorkspaceMembership.workspace_id == dataset.workspace_id,
-            WorkspaceMembership.user_id == user_uuid
-        ).first()
+        membership = (
+            db.query(WorkspaceMembership)
+            .filter(
+                WorkspaceMembership.workspace_id == dataset.workspace_id,
+                WorkspaceMembership.user_id == user_uuid,
+            )
+            .first()
+        )
         if not membership:
-            await websocket.send_json({"type": "failed", "message": "Unauthorized workspace credentials"})
+            await websocket.send_json(
+                {"type": "failed", "message": "Unauthorized workspace credentials"}
+            )
             await websocket.close(code=4008)
             return
 
@@ -85,25 +100,27 @@ async def websocket_endpoint(websocket: WebSocket, project_id: str):
         async for message in pubsub.listen():
             if message["type"] == "message":
                 await websocket.send_text(message["data"])
-                
+
                 # Check for terminal status
                 try:
                     payload = json.loads(message["data"])
                     if payload.get("type") in ("completed", "failed"):
-                         break
-                except:
+                        break
+                except Exception:
                     pass
     except WebSocketDisconnect:
         pass
     except Exception as e:
         try:
-            await websocket.send_json({"type": "failed", "message": f"Server error: {str(e)}"})
-        except:
+            await websocket.send_json(
+                {"type": "failed", "message": f"Server error: {str(e)}"}
+            )
+        except Exception:
             pass
     finally:
         db.close()
         if pubsub:
             try:
                 await pubsub.unsubscribe(f"extraction_stream:{project_id}")
-            except:
+            except Exception:
                 pass

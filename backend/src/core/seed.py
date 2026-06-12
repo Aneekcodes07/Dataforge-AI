@@ -11,7 +11,15 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from src.core.database import SessionLocal, Base
 from src.core.security import hash_password
-from src.auth.models import User, Workspace, WorkspaceMembership, Team, APIKey, CopilotSession, CopilotMessage
+from src.auth.models import (
+    User,
+    Workspace,
+    WorkspaceMembership,
+    Team,
+    APIKey,
+    CopilotSession,
+    CopilotMessage,
+)
 from src.datasets.models import Dataset
 from src.pipelines.models import Pipeline, PipelineRun
 from src.monitoring.models import AgentMetrics, Notification, ActivityLog, AuditEvent
@@ -33,7 +41,7 @@ def seed_db():
         db.query(APIKey).delete()
         db.query(CopilotMessage).delete()
         db.query(CopilotSession).delete()
-        db.execute(Base.metadata.tables['team_memberships'].delete())
+        db.execute(Base.metadata.tables["team_memberships"].delete())
         db.query(Team).delete()
         db.query(WorkspaceMembership).delete()
         db.query(Workspace).delete()
@@ -44,18 +52,18 @@ def seed_db():
         print("Creating users...")
         admin_pass = hash_password("AdminSecurePass123!")
         member_pass = hash_password("MemberSecurePass123!")
-        
+
         admin_user = User(
             name="Admin Operator",
             email="admin@dataforge.ai",
             hashed_password=admin_pass,
-            email_verified=True
+            email_verified=True,
         )
         member_user = User(
             name="Data Engineer",
             email="engineer@dataforge.ai",
             hashed_password=member_pass,
-            email_verified=True
+            email_verified=True,
         )
         db.add_all([admin_user, member_user])
         db.flush()  # Populate IDs
@@ -69,32 +77,24 @@ def seed_db():
         # 3. Create memberships
         print("Creating memberships...")
         admin_membership = WorkspaceMembership(
-            workspace_id=workspace.id,
-            user_id=admin_user.id,
-            role="Owner"
+            workspace_id=workspace.id, user_id=admin_user.id, role="Owner"
         )
         member_membership = WorkspaceMembership(
-            workspace_id=workspace.id,
-            user_id=member_user.id,
-            role="Editor"
+            workspace_id=workspace.id, user_id=member_user.id, role="Editor"
         )
         db.add_all([admin_membership, member_membership])
 
         # 4. Create team
         print("Creating team...")
-        dev_team = Team(
-            workspace_id=workspace.id,
-            name="Engineering Operations"
-        )
+        dev_team = Team(workspace_id=workspace.id, name="Engineering Operations")
         db.add(dev_team)
         db.flush()
-        
+
         # Add member to team
         db.execute(
-            Base.metadata.tables['team_memberships'].insert().values(
-                team_id=dev_team.id,
-                user_id=member_user.id
-            )
+            Base.metadata.tables["team_memberships"]
+            .insert()
+            .values(team_id=dev_team.id, user_id=member_user.id)
         )
 
         # 5. Create datasets
@@ -111,14 +111,14 @@ def seed_db():
                     {"name": "amount_cents", "type": "integer", "nullable": False},
                     {"name": "currency", "type": "string", "nullable": False},
                     {"name": "status", "type": "string", "nullable": False},
-                    {"name": "timestamp", "type": "timestamp", "nullable": False}
+                    {"name": "timestamp", "type": "timestamp", "nullable": False},
                 ]
             },
             record_count=154200,
             column_count=5,
             quality_score=98.50,
             status="Processed",
-            owner_id=member_user.id
+            owner_id=member_user.id,
         )
         dataset_2 = Dataset(
             workspace_id=workspace.id,
@@ -131,14 +131,14 @@ def seed_db():
                     {"name": "session_id", "type": "string", "nullable": False},
                     {"name": "url_path", "type": "string", "nullable": False},
                     {"name": "referrer", "type": "string", "nullable": True},
-                    {"name": "visitor_ip", "type": "string", "nullable": False}
+                    {"name": "visitor_ip", "type": "string", "nullable": False},
                 ]
             },
             record_count=0,
             column_count=0,
             quality_score=0.00,
             status="Empty",
-            owner_id=member_user.id
+            owner_id=member_user.id,
         )
         db.add_all([dataset_1, dataset_2])
         db.flush()
@@ -159,11 +159,11 @@ def seed_db():
                     {"name": "Validation", "enabled": True},
                     {"name": "Cleaning", "enabled": True},
                     {"name": "EDA", "enabled": False},
-                    {"name": "Export", "enabled": True}
+                    {"name": "Export", "enabled": True},
                 ],
-                "export_target": "s3://dataforge-clean/stripe/"
+                "export_target": "s3://dataforge-clean/stripe/",
             },
-            owner_id=member_user.id
+            owner_id=member_user.id,
         )
         db.add(pipeline_1)
         db.flush()
@@ -179,7 +179,7 @@ def seed_db():
             logs_path="/logs/stripe_etl_run_01.log",
             created_at=datetime.utcnow() - timedelta(hours=2),
             started_at=datetime.utcnow() - timedelta(hours=2, minutes=5),
-            finished_at=datetime.utcnow() - timedelta(hours=2)
+            finished_at=datetime.utcnow() - timedelta(hours=2),
         )
         run_2 = PipelineRun(
             pipeline_id=pipeline_1.id,
@@ -191,7 +191,7 @@ def seed_db():
             logs_path="/logs/stripe_etl_run_02.log",
             created_at=datetime.utcnow() - timedelta(hours=1),
             started_at=datetime.utcnow() - timedelta(hours=1, minutes=1),
-            finished_at=datetime.utcnow() - timedelta(hours=1)
+            finished_at=datetime.utcnow() - timedelta(hours=1),
         )
         db.add_all([run_1, run_2])
         db.flush()
@@ -207,7 +207,7 @@ def seed_db():
                 queue_size=0,
                 cpu_percentage=45.20,
                 memory_bytes=1024 * 1024 * 150,
-                runtime_seconds=120
+                runtime_seconds=120,
             ),
             AgentMetrics(
                 run_id=run_1.id,
@@ -217,7 +217,7 @@ def seed_db():
                 queue_size=0,
                 cpu_percentage=60.50,
                 memory_bytes=1024 * 1024 * 220,
-                runtime_seconds=90
+                runtime_seconds=90,
             ),
             AgentMetrics(
                 run_id=run_1.id,
@@ -227,8 +227,8 @@ def seed_db():
                 queue_size=0,
                 cpu_percentage=35.00,
                 memory_bytes=1024 * 1024 * 110,
-                runtime_seconds=132
-            )
+                runtime_seconds=132,
+            ),
         ]
         db.add_all(metrics)
 
@@ -241,7 +241,7 @@ def seed_db():
                 title="System health online",
                 content="All agent nodes verified and active.",
                 link="/monitoring/agents",
-                is_read=True
+                is_read=True,
             ),
             Notification(
                 user_id=member_user.id,
@@ -249,8 +249,8 @@ def seed_db():
                 title="Stripe ETL Run Failed",
                 content="Pipeline failed validation rules. Check run logs.",
                 link=f"/pipelines/{pipeline_1.id}/runs/{run_2.id}",
-                is_read=False
-            )
+                is_read=False,
+            ),
         ]
         db.add_all(notifications)
 
@@ -262,15 +262,15 @@ def seed_db():
                 user_id=member_user.id,
                 event_type="PIPELINE_RUN",
                 description=f"Pipeline '{pipeline_1.name}' run completed successfully.",
-                ip_address="192.168.1.50"
+                ip_address="192.168.1.50",
             ),
             ActivityLog(
                 workspace_id=workspace.id,
                 user_id=member_user.id,
                 event_type="PIPELINE_RUN_FAILURE",
                 description=f"Pipeline '{pipeline_1.name}' run failed validation rules.",
-                ip_address="192.168.1.50"
-            )
+                ip_address="192.168.1.50",
+            ),
         ]
         db.add_all(activities)
 
@@ -281,9 +281,12 @@ def seed_db():
             entity_type="Pipeline",
             entity_id=pipeline_1.id,
             action="CREATE",
-            details={"name": pipeline_1.name, "cron_schedule": pipeline_1.cron_schedule},
+            details={
+                "name": pipeline_1.name,
+                "cron_schedule": pipeline_1.cron_schedule,
+            },
             performer_id=member_user.id,
-            ip_address="192.168.1.50"
+            ip_address="192.168.1.50",
         )
         db.add(audit)
 
@@ -296,15 +299,14 @@ def seed_db():
             prefix="df_key_xyz",
             is_active=True,
             owner_id=member_user.id,
-            expires_at=datetime.utcnow() + timedelta(days=365)
+            expires_at=datetime.utcnow() + timedelta(days=365),
         )
         db.add(api_key)
 
         # 13. Create Copilot session & messages
         print("Creating Copilot session...")
         session = CopilotSession(
-            user_id=member_user.id,
-            title="Ingesting Clickstream JSON"
+            user_id=member_user.id, title="Ingesting Clickstream JSON"
         )
         db.add(session)
         db.flush()
@@ -313,15 +315,15 @@ def seed_db():
             CopilotMessage(
                 session_id=session.id,
                 sender="user",
-                text="How do I clean visitor_ip fields in my Web Traffic Clickstream?"
+                text="How do I clean visitor_ip fields in my Web Traffic Clickstream?",
             ),
             CopilotMessage(
                 session_id=session.id,
                 sender="ai",
                 text="You can use the 'Cleaning' agent in your pipeline to mask or convert IPs. Would you like me to generate a configuration for you?",
                 card_type="recommendation",
-                card_data={"step": "Cleaning", "rule": "mask_ip"}
-            )
+                card_data={"step": "Cleaning", "rule": "mask_ip"},
+            ),
         ]
         db.add_all(messages)
 
