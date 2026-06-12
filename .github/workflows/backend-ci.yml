@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v3
+        uses: actions/upload-artifact@v4
 
       - name: Setup Python
         uses: actions/setup-python@v4
@@ -46,7 +46,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v3
+        uses: actions/upload-artifact@v4
 
       - name: Setup Python
         uses: actions/setup-python@v4
@@ -68,7 +68,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v3
+        uses: actions/upload-artifact@v4
 
       - name: Setup Python
         uses: actions/setup-python@v4
@@ -94,7 +94,7 @@ jobs:
     needs: [lint-and-format, static-typecheck, security-scan]
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v3
+        uses: actions/upload-artifact@v4
 
       - name: Setup Python
         uses: actions/setup-python@v4
@@ -117,8 +117,8 @@ jobs:
           python -m pytest --cov=src --cov-config=.coveragerc --cov-report=xml --cov-report=term-missing tests/
 
       - name: Upload Test and Coverage Reports
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: backend-coverage-report
           path: backend/coverage.xml
-          retain-days: 7
+          retention-days: 7
