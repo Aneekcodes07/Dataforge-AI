@@ -10,12 +10,6 @@ settings = get_settings()
 
 # Determine database url dynamically from parameters if available
 db_url = settings.DATABASE_URL
-if (
-    not db_url.startswith("sqlite")
-    and settings.POSTGRES_USER
-    and settings.POSTGRES_PASSWORD
-):
-    db_url = f"postgresql://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
 
 connect_args = {}
 
