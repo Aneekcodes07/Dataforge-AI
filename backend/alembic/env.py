@@ -30,10 +30,12 @@ from src.monitoring.models import AgentMetrics, Notification, ActivityLog, Audit
 target_metadata = Base.metadata
 
 from src.core.config import get_settings
+
+
 settings = get_settings()
-db_url = settings.DATABASE_URL
-if not db_url.startswith("sqlite") and settings.POSTGRES_USER and settings.POSTGRES_PASSWORD:
-    db_url = f"postgresql://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
+
+db_url = os.getenv("DATABASE_URL", settings.DATABASE_URL)
+
 config.set_main_option("sqlalchemy.url", db_url)
 
 # other values from the config, defined by the needs of env.py,
