@@ -7,7 +7,7 @@ import httpx
 import random
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from src.celery_app import celery_app
 from src.core.database import SessionLocal
 from sqlalchemy.orm import Session
@@ -64,7 +64,7 @@ def log_and_broadcast_agent_log(
                 "id": f"log_{uuid.uuid4()}",
                 "agentId": agent,
                 "message": message,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "pipelineId": pipeline_id,
                 "runId": run_id,
             },
@@ -627,7 +627,8 @@ def run_extraction_pipeline_task(self, run_id: str, project_id: str):
 
         # 1. Update states
         run.status = "running"
-        run.started_at = datetime.utcnow()
+
+        run.started_at = datetime.now(timezone.utc) 
         dataset.status = "Processing"
         db.commit()
 
@@ -658,12 +659,23 @@ def run_extraction_pipeline_task(self, run_id: str, project_id: str):
         dataset.record_count = rows
         dataset.column_count = cols
         dataset.quality_score = float(quality)
-        dataset.updated_at = datetime.utcnow()
+        dataset.updated_at = datetime.now(timezone.utc)
 
         run.status = "completed"
         run.records_processed = rows
-        run.duration_seconds = int((datetime.utcnow() - run.started_at).total_seconds())
-        run.finished_at = datetime.utcnow()
+
+        started_at = run.started_at
+        if started_at:
+            if started_at.tzinfo is None:
+                started_at = started_at.replace(tzinfo=timezone.utc)
+            duration_seconds = int(
+                (datetime.now(timezone.utc) - started_at).total_seconds()
+            )
+        else:
+            duration_seconds = 0
+
+        run.duration_seconds = duration_seconds
+        run.finished_at = datetime.now(timezone.utc)
 
         db.commit()
 
@@ -741,7 +753,7 @@ def run_extraction_pipeline_task(self, run_id: str, project_id: str):
             )
             if dataset:
                 dataset.status = "Failed"
-                dataset.updated_at = datetime.utcnow()
+                dataset.updated_at = datetime.now(timezone.utc)
 
             run = (
                 db.query(PipelineRun)
@@ -751,7 +763,7 @@ def run_extraction_pipeline_task(self, run_id: str, project_id: str):
             if run:
                 run.status = "failed"
                 run.error_message = str(e)
-                run.finished_at = datetime.utcnow()
+                run.finished_at = datetime.now(timezone.utc)
             db.commit()
         except Exception as db_err:
             logger.error(f"Failed to set database error status: {db_err}")
