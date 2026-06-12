@@ -628,7 +628,7 @@ def run_extraction_pipeline_task(self, run_id: str, project_id: str):
         # 1. Update states
         run.status = "running"
 
-        run.started_at = datetime.now(timezone.utc) 
+        run.started_at = datetime.now(timezone.utc)
         dataset.status = "Processing"
         db.commit()
 
