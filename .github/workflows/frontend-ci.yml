@@ -37,8 +37,14 @@ jobs:
       - name: Run ESLint
         run: npm run lint || true
 
-      - name: Run Typecheck
-        run: npx tsc -b
+      - name: Show TypeScript Version
+        run: npx tsc -v
+
+      - name: Show Config
+        run: npx tsc -p tsconfig.app.json --showConfig
+
+      - name: Typecheck App
+        run: npx tsc -p tsconfig.app.json --noEmit
 
   security-scan:
     name: Security Scan (Trivy)
