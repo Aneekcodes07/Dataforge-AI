@@ -4,6 +4,36 @@
 
 ---
 
+## [0.2.0] — 2026-06-25
+
+### Security & correctness (M0)
+- Hardened the production `SECRET_KEY` startup guard (rejects placeholders and
+  short keys); `DEBUG` is now secure-by-default `false`.
+- Sentry no longer sends PII by default (`SENTRY_SEND_PII`, opt-in).
+- Denied public access to `/api/monitoring/metrics` at the Nginx edge.
+- Fixed Celery task routing (keys now match registered task names) and added a
+  drift-guard test.
+- Schema is now owned exclusively by Alembic; migrations run via `entrypoint.sh`.
+
+### Real AI Engine (M1) — replaces all simulated AI
+- **Object storage** abstraction (S3/MinIO) for raw uploads, artifacts, exports.
+- **Real ingestion**: multipart upload (MIME + size validation) and SSRF-safe
+  URL/API connectors.
+- **Document processing**: PDF (text + tables + OCR fallback), Tesseract OCR,
+  CSV/Excel/JSON, HTML, and image metadata → a normalized `ParsedDocument`.
+- **LLM gateway**: OpenAI/Anthropic/Gemini adapters + deterministic mock, model
+  registry, retries/fallback/circuit-breaker, and usage + cost tracking
+  (`llm_usage_events`, Prometheus, `GET /api/usage`).
+- **Structured extraction**: schema inference, LLM JSON extraction, real quality
+  scoring, and Parquet artifacts; the pipeline orchestrator now does real work
+  (no random results) while preserving the live telemetry event contract.
+- **RAG**: pgvector vector store, chunking, embeddings, and `POST /api/search`.
+- **Copilot**: RAG-grounded answers over real workspace data with DB-backed
+  tools and real token streaming (no canned responses).
+- **Hardening**: per-workspace monthly cost cap, Grafana LLM dashboard.
+
+---
+
 ## [0.1.1] — 2026-06-10
 
 ### Changed

@@ -208,6 +208,15 @@ def run_extraction_pipeline_task(self, run_id: str, project_id: str):
         gateway = None
         if parsed.primary_table is None:
             gateway = get_gateway()  # only documents need the LLM
+            from src.ai.quota import check_quota
+            from src.core.config import get_settings
+
+            if not check_quota(
+                db, workspace_id, get_settings().LLM_MONTHLY_COST_CAP_USD
+            ):
+                raise PipelineError(
+                    "Monthly AI budget exceeded for this workspace"
+                )
         schema = infer_schema(
             parsed,
             target_fields=target_fields,

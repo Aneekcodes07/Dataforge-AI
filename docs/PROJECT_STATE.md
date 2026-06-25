@@ -4,6 +4,24 @@
 
 ---
 
+## Phase: Real AI Engine (M1) — complete
+**Status:** ✅ Backend AI engine implemented and tested. All previously simulated
+AI (agents, extraction results, copilot) has been replaced with real
+implementations. Full integration (Postgres+pgvector, MinIO, Redis, real
+providers) is validated in CI.
+
+### What is real now
+- Ingestion (upload + SSRF-safe URL/API), document processing (PDF/OCR/CSV/Excel/
+  JSON/HTML/image), structured extraction with real quality scoring, Parquet
+  artifacts, LLM gateway (multi-provider + usage/cost), RAG (pgvector) + semantic
+  search, and a RAG-grounded Copilot with DB-backed tools.
+
+### Known follow-ups (frontend polish)
+- Wire `DatasetDetailPage` to `GET /api/datasets/{id}/records`.
+- Wire the extraction wizard's pre-launch schema panel to `POST /api/extraction/{id}/preview`.
+
+---
+
 ## Phase: 1 — Foundation & Core UI
 **Status:** ✅ Complete & Verified (Redesigned to Orange Enterprise Visual Target)
 

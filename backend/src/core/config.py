@@ -77,6 +77,9 @@ class Settings(BaseSettings):
     RAG_CHUNK_CHARS: int = 1200
     RAG_CHUNK_OVERLAP: int = 150
 
+    # Per-workspace monthly LLM spend cap in USD (0 = unlimited).
+    LLM_MONTHLY_COST_CAP_USD: float = 0.0
+
     # Monitoring
     SENTRY_DSN: str = ""
 

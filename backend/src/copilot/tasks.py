@@ -47,6 +47,21 @@ def run_copilot_query_task(
             gateway = get_gateway()
         except ProviderNotConfiguredError:
             gateway = None
+
+        # Soft cost guard: if the workspace is over its monthly AI budget, degrade
+        # to factual (DB-derived) answers instead of making paid LLM calls.
+        if gateway is not None:
+            from src.ai.quota import check_quota
+            from src.core.config import get_settings
+
+            cap = get_settings().LLM_MONTHLY_COST_CAP_USD
+            if not check_quota(db, workspace_id, cap):
+                logger.warning(
+                    "Workspace %s over monthly AI budget; Copilot using fallback",
+                    workspace_id,
+                )
+                gateway = None
+
         vector_store = get_vector_store() if gateway else None
 
         service = CopilotService(db, gateway, vector_store)
