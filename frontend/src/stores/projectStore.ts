@@ -4,7 +4,7 @@ import { api } from '@/lib/api';
 export interface Project {
   id: string;
   name: string;
-  sourceType: 'url' | 'pdf' | 'csv' | 'api' | 'excel' | 'image';
+  sourceType: 'url' | 'pdf' | 'csv' | 'api' | 'excel' | 'image' | 'json';
   status: 'completed' | 'in_progress' | 'failed' | 'queued';
   rowCount: number;
   columnCount: number;
@@ -61,7 +61,7 @@ export function validateProject(
   }
 
   // Validate sourceType
-  const validSourceTypes = ['url', 'pdf', 'csv', 'api', 'excel', 'image'];
+  const validSourceTypes = ['url', 'pdf', 'csv', 'api', 'excel', 'image', 'json'];
   if (!sourceType || !validSourceTypes.includes(sourceType)) {
     errors.push({
       field: 'sourceType',
