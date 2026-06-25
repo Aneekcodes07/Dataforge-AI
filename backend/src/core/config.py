@@ -60,6 +60,18 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
 
+    # AI / LLM gateway
+    # Allow the deterministic MockProvider ONLY when explicitly enabled and no
+    # real provider key is configured (local/offline/CI). Never silent in prod.
+    AI_ALLOW_MOCK: bool = False
+    LLM_SMART_MODEL: str = "gpt-4o"
+    LLM_FAST_MODEL: str = "gpt-4o-mini"
+    LLM_VISION_MODEL: str = "gpt-4o"
+    LLM_EMBED_MODEL: str = "text-embedding-3-small"
+    LLM_EMBED_DIM: int = 1536
+    LLM_REQUEST_TIMEOUT: float = 60.0
+    LLM_MAX_RETRIES: int = 2
+
     # Monitoring
     SENTRY_DSN: str = ""
 

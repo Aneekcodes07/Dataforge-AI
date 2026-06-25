@@ -18,6 +18,7 @@ from src.extraction.router import router as extraction_router
 from src.pipelines.router import router as pipelines_router
 from src.monitoring.router import router as monitoring_router
 from src.copilot.router import router as copilot_router, handle_copilot_stream
+from src.ai.router import router as ai_router
 from src.core.websockets import ws_manager
 from src.core.redis_pubsub import redis_pubsub_listener
 from src.core.logging_config import setup_logging, StructuredLoggingMiddleware
@@ -108,6 +109,7 @@ def create_app() -> FastAPI:
     app.include_router(pipelines_router, prefix="/api/pipelines", tags=["Pipelines"])
     app.include_router(monitoring_router, prefix="/api/monitoring", tags=["Monitoring"])
     app.include_router(copilot_router, prefix="/api/copilot", tags=["Copilot"])
+    app.include_router(ai_router, prefix="/api", tags=["Usage"])
 
     @app.get("/api/health", tags=["System"])
     async def health_check(db=Depends(get_db)):
