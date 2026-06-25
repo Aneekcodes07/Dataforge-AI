@@ -43,6 +43,18 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://redis:6379/0"
 
+    # Object storage (S3-compatible: AWS S3, MinIO, Cloudflare R2)
+    # STORAGE_ENDPOINT_URL is set for MinIO/R2 (e.g. http://minio:9000) and left
+    # empty/None for native AWS S3.
+    STORAGE_ENDPOINT_URL: str | None = None
+    STORAGE_REGION: str = "us-east-1"
+    STORAGE_BUCKET: str = "dataforge"
+    STORAGE_ACCESS_KEY: str = ""
+    STORAGE_SECRET_KEY: str = ""
+    STORAGE_USE_SSL: bool = False
+    # Maximum accepted upload size in bytes (mirrors the frontend cap).
+    MAX_UPLOAD_BYTES: int = 500 * 1024 * 1024  # 500 MB
+
     # AI Providers
     OPENAI_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""

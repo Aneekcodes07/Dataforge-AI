@@ -67,6 +67,12 @@ services:
       DEBUG: ${DEBUG:-false}
       # Only the API applies migrations on startup; workers/beat must not race.
       RUN_MIGRATIONS: "true"
+      # Object storage (MinIO in dev; point at AWS S3 / R2 in production)
+      STORAGE_ENDPOINT_URL: ${STORAGE_ENDPOINT_URL:-http://minio:9000}
+      STORAGE_BUCKET: ${STORAGE_BUCKET:-dataforge}
+      STORAGE_ACCESS_KEY: ${STORAGE_ACCESS_KEY:-dataforge}
+      STORAGE_SECRET_KEY: ${STORAGE_SECRET_KEY:-dataforge_secret}
+      STORAGE_REGION: ${STORAGE_REGION:-us-east-1}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       GEMINI_API_KEY: ${GEMINI_API_KEY}
@@ -103,6 +109,11 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://dataforge:secure_pass@postgres:5432/dataforge_ai}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      STORAGE_ENDPOINT_URL: ${STORAGE_ENDPOINT_URL:-http://minio:9000}
+      STORAGE_BUCKET: ${STORAGE_BUCKET:-dataforge}
+      STORAGE_ACCESS_KEY: ${STORAGE_ACCESS_KEY:-dataforge}
+      STORAGE_SECRET_KEY: ${STORAGE_SECRET_KEY:-dataforge_secret}
+      STORAGE_REGION: ${STORAGE_REGION:-us-east-1}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       GEMINI_API_KEY: ${GEMINI_API_KEY}
@@ -282,11 +293,36 @@ services:
         reservations:
           memory: 32M
 
+  # 11. MinIO — S3-compatible object storage (raw uploads, artifacts, exports)
+  minio:
+    image: minio/minio:RELEASE.2024-06-13T22-53-53Z
+    container_name: dataforge-minio
+    restart: always
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${STORAGE_ACCESS_KEY:-dataforge}
+      MINIO_ROOT_PASSWORD: ${STORAGE_SECRET_KEY:-dataforge_secret}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    networks:
+      - dataforge-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          memory: 128M
+
 volumes:
   postgres-data:
   redis-data:
   prometheus-data:
   grafana-data:
+  minio-data:
 
 networks:
   dataforge-network:
