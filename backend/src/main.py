@@ -13,6 +13,7 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from src.auth.router import router as auth_router
 from src.projects.router import router as projects_router
+from src.datasets.router import router as datasets_router
 from src.extraction.router import router as extraction_router
 from src.pipelines.router import router as pipelines_router
 from src.monitoring.router import router as monitoring_router
@@ -102,6 +103,7 @@ def create_app() -> FastAPI:
     # Routers
     app.include_router(auth_router, prefix="/api/auth", tags=["Authentication"])
     app.include_router(projects_router, prefix="/api/projects", tags=["Projects"])
+    app.include_router(datasets_router, prefix="/api/datasets", tags=["Datasets"])
     app.include_router(extraction_router, prefix="/api/extraction", tags=["Extraction"])
     app.include_router(pipelines_router, prefix="/api/pipelines", tags=["Pipelines"])
     app.include_router(monitoring_router, prefix="/api/monitoring", tags=["Monitoring"])

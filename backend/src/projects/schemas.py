@@ -29,17 +29,17 @@ class ProjectCreate(BaseModel):
     )
     name: str = Field(..., min_length=1, max_length=255, description="Project name")
     source_type: str = Field(
-        ..., description="Source type: url, pdf, csv, api, excel, or image"
+        ..., description="Source type: url, pdf, csv, api, excel, image, or json"
     )
     config: dict = Field(default_factory=dict, description="Project configuration")
 
     @field_validator("source_type")
     @classmethod
     def validate_source_type(cls, v: str) -> str:
-        valid_types = {"url", "pdf", "csv", "api", "excel", "image"}
+        valid_types = {"url", "pdf", "csv", "api", "excel", "image", "json"}
         if v.lower() not in valid_types:
             raise ValueError(
-                f"Invalid source_type. Must be one of: {', '.join(valid_types)}"
+                f"Invalid source_type. Must be one of: {', '.join(sorted(valid_types))}"
             )
         return v.lower()
 
