@@ -21,6 +21,48 @@ interface FastApiValidationItem {
   msg: string;
 }
 
+export interface UploadedSourceFile {
+  id: string;
+  datasetId: string;
+  originalFilename: string;
+  contentType: string | null;
+  sizeBytes: number;
+  status: string;
+}
+
+export interface PreviewSchemaField {
+  name: string;
+  dtype: string;
+  description: string;
+  required: boolean;
+}
+
+export interface PreviewColumn {
+  name: string;
+  dtype: string;
+  nullRate: number;
+  uniqueCount: number;
+  sampleValues: unknown[];
+  status: string;
+}
+
+export interface ExtractionPreview {
+  schema: PreviewSchemaField[];
+  columns: PreviewColumn[];
+  sampleRows: Record<string, unknown>[];
+  qualityScore: number;
+  recordCount: number;
+  issues: string[];
+}
+
+export interface RecordsPage {
+  columns: string[];
+  rows: Record<string, unknown>[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
 /** Normalize FastAPI 422 payloads into a consistent validation error list. */
 export function parseValidationErrors(body: Record<string, unknown>): ValidationErrorDetail[] {
   const detail = body.detail;
@@ -187,6 +229,63 @@ class ApiClient {
     });
 
     return this.handleResponse<T>(response);
+  }
+
+  /** Upload a source file for a dataset (multipart). */
+  async uploadDatasetFile(datasetId: string, file: File): Promise<UploadedSourceFile> {
+    const formData = new FormData();
+    formData.append('file', file);
+    return this.upload<UploadedSourceFile>(`/datasets/${datasetId}/files`, formData);
+  }
+
+  /** Synchronously preview a dataset's source (schema + sample + quality). */
+  async previewExtraction(datasetId: string): Promise<ExtractionPreview> {
+    return this.post<ExtractionPreview>(`/extraction/${datasetId}/preview`);
+  }
+
+  /** Fetch a page of a dataset's extracted records. */
+  async getDatasetRecords(
+    datasetId: string,
+    offset = 0,
+    limit = 50
+  ): Promise<RecordsPage> {
+    return this.get<RecordsPage>(`/datasets/${datasetId}/records`, {
+      offset: String(offset),
+      limit: String(limit),
+    });
+  }
+
+  /** Fetch a dataset's per-column profile. */
+  async getDatasetColumns(datasetId: string): Promise<PreviewColumn[]> {
+    return this.get<PreviewColumn[]>(`/datasets/${datasetId}/columns`);
+  }
+
+  /** Download a dataset's extracted data (authenticated blob download). */
+  async downloadDataset(
+    datasetId: string,
+    format: 'csv' | 'json' | 'parquet'
+  ): Promise<void> {
+    const token = useAuthStore.getState().token;
+    const headers: HeadersInit = {};
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    const response = await fetch(
+      `${this.baseUrl}/datasets/${datasetId}/download?format=${format}`,
+      { headers }
+    );
+    if (!response.ok) {
+      throw { status: response.status, message: 'Download failed' } as ApiError;
+    }
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = objectUrl;
+    anchor.download = `dataset.${format}`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(objectUrl);
   }
 }
 
