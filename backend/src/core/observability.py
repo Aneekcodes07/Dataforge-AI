@@ -195,7 +195,10 @@ def init_sentry():
             # Tune trace sample rate for performance vs trace counts (e.g. capture 10% of HTTP/Celery transactions)
             traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.1")),
             environment=os.getenv("ENVIRONMENT", "production"),
-            send_default_pii=True,
+            # Do NOT attach PII (request bodies, headers, user identifiers) by
+            # default. Operators may explicitly opt in via SENTRY_SEND_PII=true
+            # after reviewing their data-handling/compliance obligations.
+            send_default_pii=os.getenv("SENTRY_SEND_PII", "false").lower() == "true",
         )
         logger.info(
             "Sentry SDK successfully initialized and integrated with FastAPI and Celery."

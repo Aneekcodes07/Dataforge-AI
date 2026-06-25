@@ -47,8 +47,8 @@ cp .env.example .env
 
 | Variable | Description | Default / Example |
 |---|---|---|
-| `SECRET_KEY` | Flask/FastAPI signature key | `prod-secret-key-change-in-production` |
-| `JWT_SECRET` | Auth token encryption key | `prod-jwt-secret-key-change-in-production` |
+| `SECRET_KEY` | JWT signing secret. **Required in production**; must be a strong, unique value of at least 32 chars (`openssl rand -hex 32`). The API refuses to start with a placeholder when `DEBUG=false`. | _generate your own_ |
+| `DEBUG` | Enables developer behaviour and disables the strong-secret startup guard. Keep `false` in production; set `true` for local development. | `false` |
 | `DATABASE_URL` | SQLAlchemy PostgreSQL URI | `postgresql://dataforge:secure_pass@postgres:5432/dataforge_ai` |
 | `REDIS_URL` | Redis Broker connection URI | `redis://redis:6379/0` |
 | `OPENAI_API_KEY` | OpenAI API credentials | `your_openai_api_key_here` |
@@ -107,8 +107,14 @@ If running components independently for development:
    ```bash
    alembic upgrade head
    ```
+   > The schema is owned entirely by Alembic migrations (the app no longer
+   > auto-creates tables at startup). In Docker, the API container applies
+   > migrations automatically on boot via `entrypoint.sh`.
 5. Start local development server:
    ```bash
+   # For local development set DEBUG=true in your .env (this disables the
+   # production strong-secret startup guard). Alternatively export a strong
+   # SECRET_KEY (>= 32 chars).
    uvicorn src.main:app --reload --port 8000
    ```
 

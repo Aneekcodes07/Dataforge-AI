@@ -19,7 +19,9 @@ class Settings(BaseSettings):
     # Application
     APP_NAME: str = "DataForge AI"
     APP_VERSION: str = "0.1.0"
-    DEBUG: bool = True
+    # Secure by default: production must explicitly opt into debug behaviour.
+    # Local development should set DEBUG=true in its .env file.
+    DEBUG: bool = False
 
     # Server
     HOST: str = "0.0.0.0"  # nosec B104
