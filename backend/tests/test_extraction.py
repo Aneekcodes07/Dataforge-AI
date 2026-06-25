@@ -140,3 +140,22 @@ def test_writer_roundtrip_when_data_stack_available():
     assert columns == ["id", "name", "active"]
     assert len(page) == 2
     assert page[0]["name"] == "Ada"
+
+
+def test_preview_source_csv_offline():
+    from types import SimpleNamespace
+
+    from src.extraction.preview import preview_source
+    from src.storage import InMemoryObjectStore
+
+    store = InMemoryObjectStore()
+    key = "k.csv"
+    store.put_object(key, b"name,age\nAda,36\nBob,40\n", "text/csv")
+    source_file = SimpleNamespace(
+        storage_key=key, original_filename="d.csv", content_type="text/csv"
+    )
+    result = preview_source("csv", {}, store=store, source_file=source_file)
+    assert [f["name"] for f in result["schema"]] == ["name", "age"]
+    assert result["recordCount"] == 2
+    assert len(result["sampleRows"]) == 2
+    assert result["qualityScore"] == 100.0

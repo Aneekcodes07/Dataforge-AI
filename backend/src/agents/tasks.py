@@ -35,8 +35,7 @@ from src.extraction import (
     validate_and_profile,
     write_dataset,
 )
-from src.ingestion.connectors import ApiConnector, FileConnector, UrlConnector
-from src.ingestion.validation import FILE_SOURCE_TYPES
+from src.ingestion.source import build_connector
 from src.monitoring.models import AgentMetrics
 from src.pipelines.models import Pipeline, PipelineRun
 from src.processing import process_raw_document
@@ -84,44 +83,19 @@ def _record_metrics(
 
 
 def _build_connector(dataset: Dataset, config: dict, store, db: Session):
-    """Construct the right connector for the dataset's source."""
-    stype = (dataset.source_type or "").lower()
-    source = config.get("source") if isinstance(config.get("source"), dict) else {}
-
-    if stype in FILE_SOURCE_TYPES:
-        source_file = (
-            db.query(SourceFile)
-            .filter(SourceFile.dataset_id == dataset.id)
-            .order_by(SourceFile.created_at.desc())
-            .first()
-        )
-        if not source_file:
-            raise PipelineError("No source file has been uploaded for this dataset")
-        return FileConnector(
-            store,
-            source_file.storage_key,
-            filename=source_file.original_filename,
-            content_type=source_file.content_type,
-        )
-
-    if stype == "url":
-        url = config.get("url") or source.get("url")
-        if not url:
-            raise PipelineError("No URL configured for this dataset")
-        return UrlConnector(url)
-
-    if stype == "api":
-        endpoint = config.get("endpoint") or config.get("url") or source.get("endpoint")
-        if not endpoint:
-            raise PipelineError("No API endpoint configured for this dataset")
-        return ApiConnector(
-            endpoint,
-            method=config.get("method", "GET"),
-            headers=config.get("headers") or {},
-            params=config.get("params") or {},
-        )
-
-    raise PipelineError(f"Unsupported source type '{stype}'")
+    """Resolve the connector for a dataset, fetching its latest upload if needed."""
+    source_file = (
+        db.query(SourceFile)
+        .filter(SourceFile.dataset_id == dataset.id)
+        .order_by(SourceFile.created_at.desc())
+        .first()
+    )
+    return build_connector(
+        dataset.source_type or "",
+        config,
+        store=store,
+        source_file=source_file,
+    )
 
 
 def _emit_progress(

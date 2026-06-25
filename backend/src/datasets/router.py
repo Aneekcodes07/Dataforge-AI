@@ -5,17 +5,27 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import tempfile
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+    status,
+)
 from sqlalchemy.orm import Session
 
 from src.auth.models import User, WorkspaceMembership
 from src.auth.router import get_current_user
 from src.core.config import get_settings
 from src.core.database import get_db
-from src.datasets.models import Dataset, SourceFile
+from src.datasets.models import DataArtifact, Dataset, DatasetColumn, SourceFile
 from src.datasets.schemas import SourceFileResponse
 from src.ingestion.validation import (
     FILE_SOURCE_TYPES,
@@ -206,3 +216,99 @@ def list_source_files(
         )
         for f in files
     ]
+
+
+def _latest_artifact(db: Session, dataset_id) -> DataArtifact | None:
+    return (
+        db.query(DataArtifact)
+        .filter(DataArtifact.dataset_id == dataset_id)
+        .order_by(DataArtifact.created_at.desc())
+        .first()
+    )
+
+
+@router.get("/{dataset_id}/records")
+def get_records(
+    dataset_id: str,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=500),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    store: ObjectStore = Depends(get_storage),
+):
+    """Return a page of the dataset's extracted records from its latest artifact."""
+    dataset = _require_dataset(db, current_user, dataset_id)
+    artifact = _latest_artifact(db, dataset.id)
+    if artifact is None:
+        return {"columns": [], "rows": [], "total": 0, "offset": offset, "limit": limit}
+
+    from src.extraction.writer import read_page
+
+    columns, rows, total = read_page(
+        store, artifact.storage_key, offset=offset, limit=limit
+    )
+    return {
+        "columns": columns,
+        "rows": rows,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+    }
+
+
+@router.get("/{dataset_id}/columns")
+def get_columns(
+    dataset_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return the per-column profile for a dataset (schema + quality status)."""
+    dataset = _require_dataset(db, current_user, dataset_id)
+    cols = (
+        db.query(DatasetColumn)
+        .filter(DatasetColumn.dataset_id == dataset.id)
+        .order_by(DatasetColumn.created_at.asc())
+        .all()
+    )
+    return [
+        {
+            "name": c.name,
+            "dtype": c.dtype,
+            "nullRate": float(c.null_rate),
+            "uniqueCount": c.unique_count,
+            "sampleValues": c.sample_values or [],
+            "status": c.status,
+        }
+        for c in cols
+    ]
+
+
+@router.get("/{dataset_id}/download")
+def download_dataset(
+    dataset_id: str,
+    format: str = Query("csv"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    store: ObjectStore = Depends(get_storage),
+):
+    """Download the dataset's extracted data as csv, json, or parquet."""
+    dataset = _require_dataset(db, current_user, dataset_id)
+    fmt = format.lower()
+    if fmt not in {"csv", "json", "parquet"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="format must be one of: csv, json, parquet",
+        )
+    artifact = _latest_artifact(db, dataset.id)
+    if artifact is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No extracted data is available for this dataset yet",
+        )
+
+    from src.extraction.writer import export_records
+
+    payload, media_type, ext = export_records(store, artifact.storage_key, fmt)
+    slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", dataset.name).strip("_") or "dataset"
+    headers = {"Content-Disposition": f'attachment; filename="{slug}.{ext}"'}
+    return Response(content=payload, media_type=media_type, headers=headers)

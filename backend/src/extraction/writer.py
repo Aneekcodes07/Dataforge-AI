@@ -68,17 +68,54 @@ def read_records(
     limit: int = 50,
 ) -> tuple[list[str], list[dict]]:
     """Read a page of records from a stored Parquet artifact."""
+    columns, rows, _total = read_page(store, storage_key, offset=offset, limit=limit)
+    return columns, rows
+
+
+def read_page(
+    store: ObjectStore,
+    storage_key: str,
+    *,
+    offset: int = 0,
+    limit: int = 50,
+) -> tuple[list[str], list[dict], int]:
+    """Read a page of records plus the total row count."""
     import pandas as pd
 
     payload = store.get_object(storage_key)
     frame = pd.read_parquet(io.BytesIO(payload), engine="pyarrow")
     columns = [str(c) for c in frame.columns]
+    total = int(len(frame.index))
     page = frame.iloc[offset : offset + limit]
-    # Convert to JSON-safe records (NaN -> None).
     records = [
         {col: _json_safe(row[col]) for col in columns} for _, row in page.iterrows()
     ]
-    return columns, records
+    return columns, records, total
+
+
+def export_records(
+    store: ObjectStore, storage_key: str, fmt: str
+) -> tuple[bytes, str, str]:
+    """Export a stored artifact as csv/json/parquet bytes.
+
+    Returns (payload, media_type, file_extension).
+    """
+    import pandas as pd
+
+    payload = store.get_object(storage_key)
+    if fmt == "parquet":
+        return payload, "application/vnd.apache.parquet", "parquet"
+
+    frame = pd.read_parquet(io.BytesIO(payload), engine="pyarrow")
+    if fmt == "csv":
+        return frame.to_csv(index=False).encode("utf-8"), "text/csv", "csv"
+    if fmt == "json":
+        return (
+            frame.to_json(orient="records").encode("utf-8"),
+            "application/json",
+            "json",
+        )
+    raise ValueError(f"Unsupported export format '{fmt}'")
 
 
 def _json_safe(value):
