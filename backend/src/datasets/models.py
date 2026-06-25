@@ -75,6 +75,12 @@ class Dataset(Base):
     source_files = relationship(
         "SourceFile", back_populates="dataset", cascade="all, delete-orphan"
     )
+    artifacts = relationship(
+        "DataArtifact", back_populates="dataset", cascade="all, delete-orphan"
+    )
+    columns = relationship(
+        "DatasetColumn", back_populates="dataset", cascade="all, delete-orphan"
+    )
 
 
 class SourceFile(Base):
@@ -112,3 +118,67 @@ class SourceFile(Base):
     )
 
     dataset = relationship("Dataset", back_populates="source_files")
+
+
+class DataArtifact(Base):
+    """A materialized extracted dataset (e.g. Parquet) in object storage."""
+
+    __tablename__ = "data_artifacts"
+
+    id: Mapped[uuid.UUID] = Column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    dataset_id: Mapped[uuid.UUID] = Column(
+        UUID(as_uuid=True),
+        ForeignKey("datasets.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    run_id: Mapped[uuid.UUID | None] = Column(
+        UUID(as_uuid=True),
+        ForeignKey("pipeline_runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    storage_key: Mapped[str] = Column(String(1024), nullable=False)
+    format: Mapped[str] = Column(String(20), nullable=False, default="parquet")
+    row_count: Mapped[int] = Column(Integer, nullable=False, default=0)
+    column_count: Mapped[int] = Column(Integer, nullable=False, default=0)
+    byte_size: Mapped[int] = Column(BigInteger, nullable=False, default=0)
+    created_at: Mapped[datetime] = Column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+
+    __table_args__ = (
+        CheckConstraint("row_count >= 0", name="artifact_rows_non_negative"),
+    )
+
+    dataset = relationship("Dataset", back_populates="artifacts")
+
+
+class DatasetColumn(Base):
+    """Per-column profile for a dataset, powering the schema/quality UI."""
+
+    __tablename__ = "dataset_columns"
+
+    id: Mapped[uuid.UUID] = Column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    dataset_id: Mapped[uuid.UUID] = Column(
+        UUID(as_uuid=True),
+        ForeignKey("datasets.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    name: Mapped[str] = Column(String(255), nullable=False)
+    dtype: Mapped[str] = Column(String(50), nullable=False, default="string")
+    null_rate: Mapped[float] = Column(Numeric(5, 2), nullable=False, default=0)
+    unique_count: Mapped[int] = Column(Integer, nullable=False, default=0)
+    sample_values: Mapped[dict | None] = Column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=True, default=list
+    )
+    status: Mapped[str] = Column(String(20), nullable=False, default="valid")
+    created_at: Mapped[datetime] = Column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+
+    dataset = relationship("Dataset", back_populates="columns")

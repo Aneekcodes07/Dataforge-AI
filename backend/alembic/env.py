@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from src.core.database import Base
 # Import all models to register them on Base.metadata
 from src.auth.models import WorkspaceMembership, User, Workspace, Team, APIKey, CopilotSession, CopilotMessage
-from src.datasets.models import Dataset, SourceFile
+from src.datasets.models import Dataset, SourceFile, DataArtifact, DatasetColumn
 from src.pipelines.models import Pipeline, PipelineRun
 from src.monitoring.models import AgentMetrics, Notification, ActivityLog, AuditEvent
 from src.ai.models import LLMUsageEvent
