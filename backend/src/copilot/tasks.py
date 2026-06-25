@@ -1,119 +1,119 @@
-"""
-Celery task definitions for Copilot LLM queries.
-"""
+"""Celery task for Copilot queries — real RAG-grounded streaming."""
 
-import time
-import uuid
 import logging
-from datetime import datetime
+import uuid
+from datetime import datetime, timezone
+
+from src.ai.llm import ProviderNotConfiguredError, ROLE_SMART, get_gateway
+from src.ai.rag import get_vector_store
+from src.auth.models import CopilotMessage, CopilotSession
 from src.celery_app import celery_app
+from src.copilot.service import CopilotService
 from src.core.database import SessionLocal
 from src.core.redis_pubsub import publish_ws_event
-from src.auth.models import CopilotSession, CopilotMessage
-from src.copilot.router import generate_fallback_llm_response
 
 logger = logging.getLogger(__name__)
+
+
+def _publish(user_id: str, payload: dict) -> None:
+    publish_ws_event(
+        room=f"user:{user_id}", event_type="copilot.streaming", payload=payload
+    )
 
 
 @celery_app.task(name="run_copilot_query_task", bind=True, max_retries=3)
 def run_copilot_query_task(
     self, user_id: str, workspace_id: str, session_id: str, query: str
 ):
-    """Processes Copilot LLM query in worker, saves dialogue to database, and streams token frames via Pub/Sub."""
-    logger.info(
-        f"Running Copilot query task for session: {session_id}, user: {user_id}"
-    )
+    """Run a Copilot query: ground it in workspace data + RAG, stream the answer."""
+    logger.info("Running Copilot query for session %s", session_id)
     db = SessionLocal()
     try:
-        session_uuid = uuid.UUID(session_id)
-        user_uuid = uuid.UUID(user_id)
-
         session = (
             db.query(CopilotSession)
             .filter(
-                CopilotSession.id == session_uuid, CopilotSession.user_id == user_uuid
+                CopilotSession.id == uuid.UUID(session_id),
+                CopilotSession.user_id == uuid.UUID(user_id),
             )
             .first()
         )
-
         if not session:
-            publish_ws_event(
-                room=f"user:{user_id}",
-                event_type="copilot.streaming",
-                payload={"error": "Session not found", "done": True},
-            )
+            _publish(user_id, {"error": "Session not found", "done": True})
             return {"status": "failed", "error": "Session not found"}
 
-        # 1. Save User Message
-        user_msg = CopilotMessage(
-            session_id=session.id,
-            sender="user",
-            text=query,
-        )
-        db.add(user_msg)
+        db.add(CopilotMessage(session_id=session.id, sender="user", text=query))
 
-        # 2. Get LLM response mapping
-        text, card_type, card_data = generate_fallback_llm_response(query)
+        try:
+            gateway = get_gateway()
+        except ProviderNotConfiguredError:
+            gateway = None
+        vector_store = get_vector_store() if gateway else None
 
-        # 3. Save AI Message
+        service = CopilotService(db, gateway, vector_store)
+        context = service.prepare(workspace_id, query)
+
         ai_msg = CopilotMessage(
             session_id=session.id,
             sender="ai",
-            text=text,
-            card_type=card_type,
-            card_data=card_data,
+            text="",
+            card_type=context.card_type,
+            card_data=context.card_data,
         )
         db.add(ai_msg)
-
-        # Update session timestamp
-        session.updated_at = datetime.utcnow()
         db.commit()
         db.refresh(ai_msg)
+        message_id = str(ai_msg.id)
 
-        # 4. Stream response progressively word-by-word
-        words = text.split(" ")
-        current_text = ""
+        full_text = ""
+        if gateway is not None:
+            try:
+                for chunk in gateway.stream(
+                    context.messages,
+                    role=ROLE_SMART,
+                    feature="copilot",
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                ):
+                    if chunk.delta:
+                        full_text += chunk.delta
+                        _publish(
+                            user_id,
+                            {
+                                "messageId": message_id,
+                                "sessionId": session_id,
+                                "text": full_text,
+                                "done": False,
+                                "cardType": context.card_type,
+                                "cardData": context.card_data,
+                            },
+                        )
+            except Exception as exc:  # noqa: BLE001 - degrade to factual fallback
+                logger.warning("Copilot streaming failed: %s", exc)
 
-        for i, word in enumerate(words):
-            current_text += (" " if i > 0 else "") + word
-            publish_ws_event(
-                room=f"user:{user_id}",
-                event_type="copilot.streaming",
-                payload={
-                    "messageId": str(ai_msg.id),
-                    "sessionId": session_id,
-                    "text": current_text,
-                    "done": False,
-                    "cardType": card_type,
-                    "cardData": card_data,
-                },
-            )
-            time.sleep(0.04)
+        if not full_text.strip():
+            full_text = context.fallback_text
 
-        # 5. Finalize broadcast frame
-        publish_ws_event(
-            room=f"user:{user_id}",
-            event_type="copilot.streaming",
-            payload={
-                "messageId": str(ai_msg.id),
+        ai_msg.text = full_text
+        session.updated_at = datetime.now(timezone.utc)
+        db.commit()
+
+        _publish(
+            user_id,
+            {
+                "messageId": message_id,
                 "sessionId": session_id,
-                "text": text,
+                "text": full_text,
                 "done": True,
-                "cardType": card_type,
-                "cardData": card_data,
+                "cardType": context.card_type,
+                "cardData": context.card_data,
             },
         )
+        return {"status": "success", "message_id": message_id}
 
-        return {"status": "success", "message_id": str(ai_msg.id)}
-
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         db.rollback()
-        logger.error(f"Copilot background task failure: {exc}")
-        publish_ws_event(
-            room=f"user:{user_id}",
-            event_type="copilot.streaming",
-            payload={"error": str(exc), "done": True},
-        )
+        logger.error("Copilot task failed: %s", exc)
+        _publish(user_id, {"error": str(exc), "done": True})
         raise self.retry(exc=exc, countdown=5)
     finally:
         db.close()
