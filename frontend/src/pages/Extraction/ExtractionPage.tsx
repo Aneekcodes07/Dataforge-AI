@@ -23,8 +23,9 @@ import {
   Sparkles,
   ExternalLink,
 } from 'lucide-react';
-import { useProjectStore } from '@/stores/projectStore';
+import { useProjectStore, type Project } from '@/stores/projectStore';
 import { useAgentStore } from '@/stores/agentStore';
+import { api } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
 type SourceId = 'url' | 'pdf' | 'csv' | 'excel' | 'api' | 'image' | 'database' | 'json';
@@ -68,6 +69,10 @@ export default function ExtractionPage() {
   // Step 1 states
   const [selectedSource, setSelectedSource] = useState<SourceId>('url');
   const [uploadedFile, setUploadedFile] = useState<{ name: string; size: number } | null>(null);
+  const [sourceFile, setSourceFile] = useState<File | null>(null);
+  const [sourceUrl, setSourceUrl] = useState('');
+  const [apiEndpoint, setApiEndpoint] = useState('');
+  const [apiMethod, setApiMethod] = useState<'GET' | 'POST'>('GET');
   const [dragActive, setDragActive] = useState(false);
   const [fileError, setFileError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -136,9 +141,11 @@ export default function ExtractionPage() {
       if (file.size > 500 * 1024 * 1024) {
         setFileError('File size exceeds 500MB maximum limit');
         setUploadedFile(null);
+        setSourceFile(null);
       } else {
         setFileError('');
         setUploadedFile({ name: file.name, size: file.size });
+        setSourceFile(file);
       }
     }
   };
@@ -149,9 +156,11 @@ export default function ExtractionPage() {
       if (file.size > 500 * 1024 * 1024) {
         setFileError('File size exceeds 500MB maximum limit');
         setUploadedFile(null);
+        setSourceFile(null);
       } else {
         setFileError('');
         setUploadedFile({ name: file.name, size: file.size });
+        setSourceFile(file);
       }
     }
   };
@@ -251,41 +260,21 @@ export default function ExtractionPage() {
       });
     };
 
-    await addLog('[INIT] Handshaking extraction target node...', 300);
-    await addLog('[SYS_NODE] Connecting ingestion connector source...', 400);
+    if (selectedSource === 'database') {
+      await addLog('[ERROR] Database Sync connector is coming soon and is not yet available.', 100);
+      return;
+    }
+
+    await addLog('[INIT] Creating dataset and pipeline configuration...', 300);
     setLaunchStage(1);
-    await addLog('[SUCCESS] Target connector source handshake confirmed.', 300);
-
-    if (selectedAgents.ocr) {
-      await addLog('[SYS_NODE] Spawning Tesseract-OCR parser worker instance...', 500);
-      setLaunchStage(2);
-      await addLog('[OCR] Loading image bounding layout checkpoints...', 400);
-      await addLog('[SUCCESS] OCR extraction framework started successfully.', 300);
-    } else {
-      await addLog('[OCR] Skip OCR parsing agent. Continuing to LLM core extractor...', 200);
-      setLaunchStage(2);
-    }
-
-    await addLog('[SYS_NODE] Launching autonomous extraction agent: gpt-4o-mini...', 500);
-    setLaunchStage(3);
-    await addLog('[LLM] Compiling structural schemas and target query prompt constraints...', 400);
-    await addLog('[LLM] Ingestion token allocation: 1.2M query space mapped.', 300);
-
-    await addLog('[SYS_NODE] Activating schema guard validation parameters...', 500);
-    setLaunchStage(4);
-    await addLog('[VALIDATOR] Quality score checking: target price formatting...', 400);
-    if (fixesApplied.coerceFloat || fixesApplied.fillMuted) {
-      await addLog('[VALIDATOR] Resolving auto-fix anomalies: applied custom data cleaning overrides.', 300);
-    }
-
-    await addLog('[SYS_NODE] Initializing ML Parquet S3 database exporter pipelines...', 600);
-    setLaunchStage(5);
-    await addLog('[EXPORTER] Compiling binary columnar output tables in Apache Parquet...', 400);
 
     // Call store action
     const defaultName = projectName || `Pipeline - ${selectedSource.toUpperCase()} [${new Date().toLocaleDateString()}]`;
-    const config = {
-      target_fields: targetFields.split(',').map((f) => f.trim()),
+    const config: Record<string, unknown> = {
+      target_fields: targetFields
+        .split(',')
+        .map((f) => f.trim())
+        .filter(Boolean),
       depth: crawlDepth,
       limit: crawlLimit,
       format: dataFormat,
@@ -297,14 +286,46 @@ export default function ExtractionPage() {
         customUserAgent,
       },
     };
+    if (selectedSource === 'url') config.url = sourceUrl;
+    if (selectedSource === 'api') {
+      config.endpoint = apiEndpoint;
+      config.method = apiMethod;
+    }
     
-    const project = await createProject(defaultName, selectedSource as any, config);
-    if (project) {
+    const project = await createProject(
+      defaultName,
+      selectedSource as Project['sourceType'],
+      config
+    );
+    if (!project) {
+      await addLog('[ERROR] Backend rejected the configuration. Check the required fields.', 100);
+      return;
+    }
+
+    try {
+      const fileSources = ['pdf', 'csv', 'excel', 'image', 'json'];
+      if (fileSources.includes(selectedSource)) {
+        if (!sourceFile) {
+          await addLog('[ERROR] No source file selected to upload.', 100);
+          return;
+        }
+        await addLog('[INGEST] Uploading source file to object storage...', 300);
+        setLaunchStage(2);
+        await api.uploadDatasetFile(project.id, sourceFile);
+        await addLog('[SUCCESS] Source file stored securely.', 200);
+      } else {
+        setLaunchStage(2);
+      }
+
+      await addLog('[DISPATCH] Triggering extraction pipeline run...', 300);
+      setLaunchStage(3);
       connectWebSocket(project.id);
-      await addLog('[SUCCESS] Ingestion pipeline launched successfully!', 300);
+      await addLog('[SUCCESS] Pipeline launched. Streaming live agent telemetry...', 300);
       setLaunchStage(6);
-    } else {
-      await addLog('[ERROR] Backend creation payload validation failed. Check schema configuration.', 100);
+    } catch (err) {
+      const message =
+        (err as { message?: string }).message || 'Pipeline launch failed';
+      await addLog(`[ERROR] ${message}`, 100);
     }
   };
 
@@ -477,6 +498,7 @@ export default function ExtractionPage() {
                           onClick={() => {
                             setSelectedSource(src.id);
                             setUploadedFile(null);
+                            setSourceFile(null);
                             setFileError('');
                           }}
                           className={cn(
@@ -569,6 +591,54 @@ export default function ExtractionPage() {
                             </p>
                           </div>
                         )}
+                      </div>
+                    </div>
+                  )}
+
+                  {selectedSource === 'url' && (
+                    <div className="space-y-2 text-left">
+                      <label
+                        htmlFor="w-source-url"
+                        className="block text-[10px] font-mono font-bold uppercase tracking-wider text-text-secondary"
+                      >
+                        Target URL
+                      </label>
+                      <input
+                        id="w-source-url"
+                        type="url"
+                        value={sourceUrl}
+                        onChange={(e) => setSourceUrl(e.target.value)}
+                        placeholder="https://example.com/data"
+                        className="input-base text-xs w-full"
+                      />
+                    </div>
+                  )}
+
+                  {selectedSource === 'api' && (
+                    <div className="space-y-2 text-left">
+                      <label
+                        htmlFor="w-api-endpoint"
+                        className="block text-[10px] font-mono font-bold uppercase tracking-wider text-text-secondary"
+                      >
+                        API Endpoint
+                      </label>
+                      <div className="flex gap-2">
+                        <select
+                          value={apiMethod}
+                          onChange={(e) => setApiMethod(e.target.value as 'GET' | 'POST')}
+                          className="input-base text-xs bg-[#121212] w-24 cursor-pointer"
+                        >
+                          <option value="GET">GET</option>
+                          <option value="POST">POST</option>
+                        </select>
+                        <input
+                          id="w-api-endpoint"
+                          type="url"
+                          value={apiEndpoint}
+                          onChange={(e) => setApiEndpoint(e.target.value)}
+                          placeholder="https://api.example.com/v1/data"
+                          className="input-base text-xs flex-1"
+                        />
                       </div>
                     </div>
                   )}

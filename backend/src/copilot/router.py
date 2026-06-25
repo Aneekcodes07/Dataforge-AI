@@ -6,12 +6,14 @@ from fastapi import APIRouter, Depends, HTTPException, status, WebSocket
 from sqlalchemy.orm import Session
 from datetime import datetime
 import uuid
-from typing import Any
 
 from src.core.database import get_db
 from src.core.config import get_settings
 from src.auth.router import get_current_user
-from src.auth.models import User, CopilotSession, CopilotMessage
+from src.auth.models import User, CopilotSession, CopilotMessage, WorkspaceMembership
+from src.ai.llm import ProviderNotConfiguredError, get_gateway
+from src.ai.rag import get_vector_store
+from src.copilot.service import CopilotService
 from src.copilot.schemas import (
     CopilotSessionResponse,
     CopilotMessageResponse,
@@ -127,58 +129,6 @@ def list_messages(
     ]
 
 
-def generate_fallback_llm_response(
-    query: str,
-) -> tuple[str, str | None, dict[str, Any]]:
-    """Provide structured mock responses depending on query context."""
-    q = query.lower()
-
-    if "failed" in q or "history" in q:
-        text = "Based on your ingestion history logs, **1 pipeline execution failed** in the last 24 hours:\n\n* **Pipeline ID:** `pl_ec_crawl_8321`\n* **Connector Source:** Website Scraper (`url`)\n* **Failure Point:** stage `extractor` timed out when resolving connections with the target gateway relayer."
-        card_type = "pipeline"
-        card_data: dict[str, Any] = {
-            "impact": "Critical Error",
-            "accuracy": "96%",
-            "recommendation": "Retry active crawl node. Bypassing validation or rate-limiting is not suggested.",
-        }
-    elif "quality" in q or "low-quality" in q or "dataset" in q:
-        text = "Scanned all S3 Parquet dataset tables. The dataset **`arxiv-ml-papers`** is currently flagged with **quality compliance issues** (91.5% score):\n\n* **Missing Values:** `description` field has 11.7% null rate (216 empty fields).\n* **Out-of-Bounds:** `price` field contains negative float ranges."
-        card_type = "dataset"
-        card_data = {
-            "score": "91.5%",
-            "anomalies": 219,
-            "actions": ["Auto-impute missing values", "Verify schema rules"],
-        }
-    elif "clean" in q or "rules" in q:
-        text = "To clean and standardize your current dataset catalog, I suggest appending the following **DataForge Auto-Cleaner rules**:"
-        card_type = "cleaning"
-        card_data = {
-            "imputations": [
-                {"field": "description", "method": "default", "fill_value": ""}
-            ],
-            "coercions": [{"field": "price", "rule": "numeric_float_absolute"}],
-        }
-    elif "agent" in q or "overloaded" in q:
-        text = "Ingest worker node **`crawler_worker_04`** (Extractor agent) is currently flagged as **Overloaded**:\n\n* **Queue size:** `14 items` in memory buffer.\n* **Throughput:** `2,840 records/sec` processing peak.\n* **Latency:** `114ms` loop speed (normal range <50ms).\n* **CPU usage:** `92%` core capacity."
-        card_type = "agent"
-        card_data = {
-            "cpu": "92%",
-            "latency": "114ms",
-            "queue": 14,
-            "throughput": "2.8K rec/s",
-        }
-    elif "optimize" in q or "optimizations" in q:
-        text = "I recommend three core optimizations to elevate your crawling throughput speeds and reduce costs:\n\n1. **Parallel Workers:** Increase scraper threads from 2 to 4 nodes.\n2. **Bypass OCR:** Disable OCR Parsing node if target files contain native digital text layouts.\n3. **Relay Proxies:** Enable proxy rotation relay to prevent target rate-limiting delays."
-        card_type = "optimization"
-        card_data = {"boost": "+24% Throughput", "instance": "df.t4.large"}
-    else:
-        text = "Hello! I am the DataForge AI Data Copilot. I can assist you with your pipeline configurations, data cleaning rules, agent resource settings, or history log diagnostics."
-        card_type = None
-        card_data = {}
-
-    return text, card_type, card_data
-
-
 @router.post("/sessions/{session_id}/query", response_model=CopilotMessageResponse)
 def submit_query(
     session_id: str,
@@ -217,8 +167,22 @@ def submit_query(
     )
     db.add(user_msg)
 
-    # 2. Get Response (integrates API key check or fallback)
-    text, card_type, card_data = generate_fallback_llm_response(payload.text)
+    # 2. Generate a grounded response via the Copilot service.
+    membership = (
+        db.query(WorkspaceMembership)
+        .filter(WorkspaceMembership.user_id == current_user.id)
+        .first()
+    )
+    workspace_id = str(membership.workspace_id) if membership else None
+    try:
+        gateway = get_gateway()
+    except ProviderNotConfiguredError:
+        gateway = None
+    vector_store = get_vector_store() if gateway else None
+    service = CopilotService(db, gateway, vector_store)
+    text, card_type, card_data = service.complete(
+        workspace_id, payload.text, str(current_user.id)
+    )
 
     # 3. Save AI Message
     ai_msg = CopilotMessage(

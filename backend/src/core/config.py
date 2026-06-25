@@ -43,10 +43,42 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://redis:6379/0"
 
+    # Object storage (S3-compatible: AWS S3, MinIO, Cloudflare R2)
+    # STORAGE_ENDPOINT_URL is set for MinIO/R2 (e.g. http://minio:9000) and left
+    # empty/None for native AWS S3.
+    STORAGE_ENDPOINT_URL: str | None = None
+    STORAGE_REGION: str = "us-east-1"
+    STORAGE_BUCKET: str = "dataforge"
+    STORAGE_ACCESS_KEY: str = ""
+    STORAGE_SECRET_KEY: str = ""
+    STORAGE_USE_SSL: bool = False
+    # Maximum accepted upload size in bytes (mirrors the frontend cap).
+    MAX_UPLOAD_BYTES: int = 500 * 1024 * 1024  # 500 MB
+
     # AI Providers
     OPENAI_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
+
+    # AI / LLM gateway
+    # Allow the deterministic MockProvider ONLY when explicitly enabled and no
+    # real provider key is configured (local/offline/CI). Never silent in prod.
+    AI_ALLOW_MOCK: bool = False
+    LLM_SMART_MODEL: str = "gpt-4o"
+    LLM_FAST_MODEL: str = "gpt-4o-mini"
+    LLM_VISION_MODEL: str = "gpt-4o"
+    LLM_EMBED_MODEL: str = "text-embedding-3-small"
+    LLM_EMBED_DIM: int = 1536
+    LLM_REQUEST_TIMEOUT: float = 60.0
+    LLM_MAX_RETRIES: int = 2
+
+    # RAG / semantic search
+    RAG_TOP_K: int = 5
+    RAG_CHUNK_CHARS: int = 1200
+    RAG_CHUNK_OVERLAP: int = 150
+
+    # Per-workspace monthly LLM spend cap in USD (0 = unlimited).
+    LLM_MONTHLY_COST_CAP_USD: float = 0.0
 
     # Monitoring
     SENTRY_DSN: str = ""

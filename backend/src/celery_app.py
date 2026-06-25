@@ -45,14 +45,8 @@ celery_app.conf.task_queues = (
 # Heavy, long-running pipeline/agent work goes to `heavy_ops`; fast,
 # latency-sensitive bookkeeping goes to `high_priority`.
 celery_app.conf.task_routes = {
-    # Pipeline orchestrator + individual agent stages (src/agents/tasks.py)
+    # Pipeline orchestrator (src/agents/tasks.py) — runs all stages inline.
     "run_extraction_pipeline_task": {"queue": "heavy_ops"},
-    "run_web_crawling_task": {"queue": "heavy_ops"},
-    "run_ocr_task": {"queue": "heavy_ops"},
-    "run_extraction_task": {"queue": "heavy_ops"},
-    "run_schema_task": {"queue": "heavy_ops"},
-    "run_validation_task": {"queue": "heavy_ops"},
-    "run_cleaning_task": {"queue": "heavy_ops"},
     # Copilot query processing (src/copilot/tasks.py)
     "run_copilot_query_task": {"queue": "heavy_ops"},
     # Notifications, activity feed, and health (src/monitoring/tasks.py)
