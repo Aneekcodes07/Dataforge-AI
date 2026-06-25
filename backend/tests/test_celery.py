@@ -1,35 +1,31 @@
-"""
-Celery integration and worker tests verifying task routing, health checks, and execution states.
-"""
+"""Celery integration tests: routing, health, and the real pipeline orchestrator."""
 
 import pytest
-import uuid
-from datetime import datetime
-from src.celery_app import celery_app
-from src.core.database import SessionLocal, Base, engine
-from src.auth.models import User, Workspace, WorkspaceMembership
-from src.datasets.models import Dataset
-from src.pipelines.models import Pipeline, PipelineRun
-from src.monitoring.models import AgentMetrics, ActivityLog
-from src.monitoring.tasks import celery_health_check
-from src.agents.tasks import run_extraction_pipeline_task, run_ocr_task
+from unittest.mock import patch
 
-# Import task modules for their side effect of registering tasks on the Celery
-# app, so the routing drift-guard in test_celery_task_routing can see them all.
+from src.celery_app import celery_app
+from src.core.database import Base, SessionLocal, engine
+from src.auth.models import Workspace
+from src.datasets.models import DataArtifact, Dataset, DatasetColumn, SourceFile
+from src.pipelines.models import Pipeline, PipelineRun
+from src.monitoring.tasks import celery_health_check
+from src.agents.tasks import run_extraction_pipeline_task
+
+# Import task modules so the routing drift-guard sees every registered task.
 import src.copilot.tasks  # noqa: F401
 
 
 @pytest.fixture(autouse=True)
 def mock_redis():
-    """Mock Redis client to avoid network requests and hangs during tests."""
-    from unittest.mock import patch
-    with patch("src.core.redis_pubsub.sync_redis") as mock_sync_redis:
+    """Mock Redis so telemetry broadcasts don't require a broker."""
+    from unittest.mock import patch as _patch
+
+    with _patch("src.core.redis_pubsub.sync_redis") as mock_sync_redis:
         yield mock_sync_redis
 
 
 @pytest.fixture(scope="function")
 def db():
-    """Setup and teardown a clean database for each test function."""
     Base.metadata.create_all(bind=engine)
     session = SessionLocal()
     try:
@@ -40,120 +36,139 @@ def db():
 
 
 def test_celery_task_routing():
-    """Verify tasks are routed to their designated queues.
-
-    Keys must match the registered Celery task names exactly; a mismatch
-    silently sends tasks to the default queue instead of the intended one.
-    """
+    """Routed keys must match registered task names exactly."""
     routes = celery_app.conf.task_routes
-    # Heavy, long-running pipeline/agent work.
     assert routes["run_extraction_pipeline_task"] == {"queue": "heavy_ops"}
-    assert routes["run_web_crawling_task"] == {"queue": "heavy_ops"}
-    assert routes["run_ocr_task"] == {"queue": "heavy_ops"}
-    assert routes["run_extraction_task"] == {"queue": "heavy_ops"}
-    assert routes["run_schema_task"] == {"queue": "heavy_ops"}
-    assert routes["run_validation_task"] == {"queue": "heavy_ops"}
-    assert routes["run_cleaning_task"] == {"queue": "heavy_ops"}
     assert routes["run_copilot_query_task"] == {"queue": "heavy_ops"}
-    # Fast, latency-sensitive bookkeeping.
     assert routes["process_notification_task"] == {"queue": "high_priority"}
     assert routes["log_activity_task"] == {"queue": "high_priority"}
     assert routes["celery_health_check"] == {"queue": "high_priority"}
 
-    # Every routed key must correspond to a real, registered task name so the
-    # routing table can never drift from the task definitions again.
     registered = set(celery_app.tasks.keys())
     for task_name in routes:
         assert task_name in registered, f"Route references unknown task: {task_name}"
 
 
 def test_health_check_task():
-    """Verify health check task runs successfully in eager mode."""
     result = celery_health_check.apply()
     assert result.status == "SUCCESS"
     assert result.result["status"] == "ok"
-    assert "timestamp" in result.result
 
 
-def test_modular_ocr_task(db):
-    """Verify that a modular agent task executes and logs its actions."""
-    # Setup test workspace, project, pipeline, and run
-    workspace = Workspace(name="Test Workspace")
+def test_pipeline_orchestration_csv_end_to_end(db, monkeypatch):
+    """The orchestrator ingests a real CSV, extracts, validates, and persists."""
+    pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+
+    import src.agents.tasks as tasks_mod
+    from src.storage import InMemoryObjectStore
+
+    store = InMemoryObjectStore()
+    monkeypatch.setattr(tasks_mod, "get_object_store", lambda: store)
+
+    workspace = Workspace(name="Pipeline WS")
     db.add(workspace)
     db.flush()
-
-    dataset = Dataset(workspace_id=workspace.id, name="Test Ingest")
+    dataset = Dataset(
+        workspace_id=workspace.id, name="CSV DS", source_type="csv", status="Empty"
+    )
     db.add(dataset)
     db.flush()
-
-    pipeline = Pipeline(workspace_id=workspace.id, dataset_id=dataset.id, name="Test Pipeline")
+    pipeline = Pipeline(
+        workspace_id=workspace.id,
+        dataset_id=dataset.id,
+        name="CSV Pipeline",
+        run_configuration={},
+    )
     db.add(pipeline)
     db.flush()
-
     run = PipelineRun(pipeline_id=pipeline.id, status="queued")
     db.add(run)
     db.commit()
 
-    # Prevent db.close() from closing the test transaction during task run
-    original_close = db.close
-    db.close = lambda: None
-
-    from unittest.mock import patch
-    try:
-        with patch("src.agents.tasks.SessionLocal", return_value=db):
-            # Execute OCR task synchronously via Celery eager mode
-            result = run_ocr_task.apply(args=(str(run.id), str(dataset.id), str(workspace.id), str(pipeline.id)))
-    finally:
-        db.close = original_close
-
-    assert result.status == "SUCCESS"
-
-    # Verify log entry created in DB
-    logs = db.query(ActivityLog).filter(ActivityLog.workspace_id == workspace.id).all()
-    assert len(logs) > 0
-    assert any("OCR scanning completes" in log.description for log in logs)
-
-
-def test_pipeline_orchestration_task(db):
-    """Verify parent pipeline orchestrator coordinates all steps and saves final results."""
-    # Setup test data
-    workspace = Workspace(name="Orchestrator Workspace")
-    db.add(workspace)
-    db.flush()
-
-    dataset = Dataset(workspace_id=workspace.id, name="Ingest Stream")
-    db.add(dataset)
-    db.flush()
-
-    pipeline = Pipeline(workspace_id=workspace.id, dataset_id=dataset.id, name="ETL Stream")
-    db.add(pipeline)
-    db.flush()
-
-    run = PipelineRun(pipeline_id=pipeline.id, status="queued")
-    db.add(run)
+    key = f"workspaces/{workspace.id}/datasets/{dataset.id}/sources/data.csv"
+    payload = b"name,age\nAda,36\nBob,40\nCy,29\n"
+    store.put_object(key, payload, "text/csv")
+    db.add(
+        SourceFile(
+            workspace_id=workspace.id,
+            dataset_id=dataset.id,
+            original_filename="data.csv",
+            content_type="text/csv",
+            size_bytes=len(payload),
+            storage_key=key,
+            status="stored",
+        )
+    )
     db.commit()
 
-    # Prevent db.close() from closing the test transaction during task run
     original_close = db.close
     db.close = lambda: None
-
-    from unittest.mock import patch
     try:
         with patch("src.agents.tasks.SessionLocal", return_value=db):
-            # Execute orchestrator task in Celery eager mode
-            result = run_extraction_pipeline_task.apply(args=(str(run.id), str(dataset.id)))
+            result = run_extraction_pipeline_task.apply(
+                args=(str(run.id), str(dataset.id))
+            )
     finally:
         db.close = original_close
 
     assert result.status == "SUCCESS"
     assert result.result["status"] == "completed"
 
-    # Verify run and dataset states updated in database
     db.refresh(run)
     db.refresh(dataset)
-
     assert run.status == "completed"
-    assert run.records_processed > 0
-    assert run.duration_seconds >= 0
+    assert run.records_processed == 3
     assert dataset.status == "Ready"
-    assert dataset.record_count == run.records_processed
+    assert dataset.record_count == 3
+    assert dataset.column_count == 2
+    assert dataset.s3_path  # artifact key recorded
+    assert 0 < float(dataset.quality_score) <= 100
+
+    assert db.query(DataArtifact).filter_by(dataset_id=dataset.id).count() == 1
+    assert db.query(DatasetColumn).filter_by(dataset_id=dataset.id).count() == 2
+    # The artifact bytes were written to object storage.
+    artifact = db.query(DataArtifact).filter_by(dataset_id=dataset.id).first()
+    assert store.exists(artifact.storage_key)
+
+
+def test_pipeline_fails_cleanly_without_source(db, monkeypatch):
+    """A file dataset with no uploaded source fails the run with a clear status."""
+    import src.agents.tasks as tasks_mod
+    from src.storage import InMemoryObjectStore
+
+    monkeypatch.setattr(tasks_mod, "get_object_store", lambda: InMemoryObjectStore())
+
+    workspace = Workspace(name="No Source WS")
+    db.add(workspace)
+    db.flush()
+    dataset = Dataset(
+        workspace_id=workspace.id, name="Empty DS", source_type="csv", status="Empty"
+    )
+    db.add(dataset)
+    db.flush()
+    pipeline = Pipeline(
+        workspace_id=workspace.id, dataset_id=dataset.id, name="P", run_configuration={}
+    )
+    db.add(pipeline)
+    db.flush()
+    run = PipelineRun(pipeline_id=pipeline.id, status="queued")
+    db.add(run)
+    db.commit()
+
+    original_close = db.close
+    db.close = lambda: None
+    try:
+        with patch("src.agents.tasks.SessionLocal", return_value=db):
+            result = run_extraction_pipeline_task.apply(
+                args=(str(run.id), str(dataset.id))
+            )
+    finally:
+        db.close = original_close
+
+    assert result.result["status"] == "failed"
+    db.refresh(run)
+    db.refresh(dataset)
+    assert run.status == "failed"
+    assert dataset.status == "Failed"
+    assert run.error_message

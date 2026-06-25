@@ -1,689 +1,392 @@
-"""
-Celery task definitions for Pipeline Orchestrator and Agent nodes.
+"""Celery pipeline orchestrator.
+
+Runs the real extraction pipeline for a dataset:
+
+    ingest -> parse -> infer schema -> extract -> validate -> write artifact
+
+The six logical stages map onto the agent ids the frontend already renders
+(ingestion, ocr, extractor, schema, validator, cleaner) so the live telemetry UI
+is unchanged; only the work and the emitted numbers are now real. Intermediate
+data stays in-process (a single task) rather than being serialized through the
+broker between sub-tasks.
 """
 
-import time
-import httpx
-import random
+from __future__ import annotations
+
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
+
+from sqlalchemy.orm import Session
+
+from src.agents.telemetry import (
+    broadcast_agent_telemetry,
+    log_and_broadcast_agent_log,
+)
+from src.ai.llm import get_gateway
 from src.celery_app import celery_app
 from src.core.database import SessionLocal
-from sqlalchemy.orm import Session
-from src.core.redis_pubsub import publish_ws_event, publish_extraction_event
-from src.datasets.models import Dataset
+from src.core.redis_pubsub import publish_extraction_event, publish_ws_event
+from src.datasets.models import DataArtifact, Dataset, DatasetColumn, SourceFile
+from src.extraction import (
+    extract_records,
+    infer_schema,
+    validate_and_profile,
+    write_dataset,
+)
+from src.ingestion.connectors import ApiConnector, FileConnector, UrlConnector
+from src.ingestion.validation import FILE_SOURCE_TYPES
+from src.monitoring.models import AgentMetrics
 from src.pipelines.models import Pipeline, PipelineRun
-from src.monitoring.models import ActivityLog
+from src.processing import process_raw_document
+from src.storage import get_object_store
 
 logger = logging.getLogger(__name__)
 
 
-def log_and_broadcast_agent_log(
+class PipelineError(Exception):
+    """A non-retryable pipeline configuration/data error."""
+
+
+def _rss_bytes() -> int:
+    try:
+        import resource
+
+        return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * 1024
+    except Exception:  # noqa: BLE001 - metrics are best-effort
+        return 0
+
+
+def _record_metrics(
     db: Session,
-    workspace_id: str,
-    pipeline_id: str,
     run_id: str,
-    project_id: str,
-    agent: str,
-    message: str,
-    event_type: str = "activity.created",
-):
-    """Log log event to DB, broadcast activity/log events to workspace, and update extraction stream."""
-    try:
-        # 1. DB Save
-        log_entry = ActivityLog(
-            workspace_id=uuid.UUID(workspace_id),
-            event_type=event_type,
-            description=f"[{agent.upper()}] {message}",
-        )
-        db.add(log_entry)
-        db.commit()
-        db.refresh(log_entry)
-
-        # 2. Workspace general activity
-        publish_ws_event(
-            room=f"workspace:{workspace_id}",
-            event_type="activity.created",
-            payload={
-                "id": str(log_entry.id),
-                "workspaceId": workspace_id,
-                "eventType": event_type,
-                "description": log_entry.description,
-                "createdAt": log_entry.created_at.isoformat(),
-                "agent": agent,
-                "message": message,
-            },
-        )
-
-        # 3. Workspace pipeline logs console
-        publish_ws_event(
-            room=f"workspace:{workspace_id}",
-            event_type="pipeline.log",
-            payload={
-                "id": f"log_{uuid.uuid4()}",
-                "agentId": agent,
-                "message": message,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "pipelineId": pipeline_id,
-                "runId": run_id,
-            },
-        )
-
-        # 4. Project direct extraction stream
-        publish_extraction_event(
-            project_id=project_id,
-            payload={"type": "log", "agent": agent, "message": message},
-        )
-    except Exception as e:
-        logger.error(f"Error in logging and broadcasting: {e}")
-
-
-def broadcast_agent_telemetry(
-    workspace_id: str,
-    project_id: str,
-    agent: str,
-    status: str,
+    agent_type: str,
+    runtime_seconds: float,
+    *,
+    records: int = 0,
     queue_size: int = 0,
-    latency: str = "10ms",
-    throughput: str = "0/s",
-):
-    """Helper to publish status, queue, and health telemetry to global WS bridge and local extraction stream."""
-    # Publish agent.status.changed to workspace
+    status: str = "Completed",
+) -> None:
+    throughput = round(records / runtime_seconds, 2) if runtime_seconds > 0 else 0.0
+    metric = AgentMetrics(
+        run_id=uuid.UUID(run_id),
+        agent_type=agent_type,
+        status=status,
+        throughput=throughput,
+        queue_size=queue_size,
+        cpu_percentage=0,
+        memory_bytes=_rss_bytes(),
+        runtime_seconds=int(runtime_seconds),
+    )
+    db.add(metric)
+    db.commit()
+
+
+def _build_connector(dataset: Dataset, config: dict, store, db: Session):
+    """Construct the right connector for the dataset's source."""
+    stype = (dataset.source_type or "").lower()
+    source = config.get("source") if isinstance(config.get("source"), dict) else {}
+
+    if stype in FILE_SOURCE_TYPES:
+        source_file = (
+            db.query(SourceFile)
+            .filter(SourceFile.dataset_id == dataset.id)
+            .order_by(SourceFile.created_at.desc())
+            .first()
+        )
+        if not source_file:
+            raise PipelineError("No source file has been uploaded for this dataset")
+        return FileConnector(
+            store,
+            source_file.storage_key,
+            filename=source_file.original_filename,
+            content_type=source_file.content_type,
+        )
+
+    if stype == "url":
+        url = config.get("url") or source.get("url")
+        if not url:
+            raise PipelineError("No URL configured for this dataset")
+        return UrlConnector(url)
+
+    if stype == "api":
+        endpoint = config.get("endpoint") or config.get("url") or source.get("endpoint")
+        if not endpoint:
+            raise PipelineError("No API endpoint configured for this dataset")
+        return ApiConnector(
+            endpoint,
+            method=config.get("method", "GET"),
+            headers=config.get("headers") or {},
+            params=config.get("params") or {},
+        )
+
+    raise PipelineError(f"Unsupported source type '{stype}'")
+
+
+def _emit_progress(
+    workspace_id, pipeline_id, run_id, project_id, progress: int
+) -> None:
+    publish_extraction_event(project_id, {"type": "progress", "progress": progress})
     publish_ws_event(
-        room=f"workspace:{workspace_id}",
-        event_type="agent.status.changed",
-        payload={"agent": agent, "status": status},
+        f"workspace:{workspace_id}",
+        "pipeline.progress",
+        {"progress": progress, "pipelineId": pipeline_id, "runId": run_id},
     )
-    # Publish agent.queue.updated to workspace
-    publish_ws_event(
-        room=f"workspace:{workspace_id}",
-        event_type="agent.queue.updated",
-        payload={"agent": agent, "queueSize": queue_size},
-    )
-    # Publish agent.health.updated to workspace
-    publish_ws_event(
-        room=f"workspace:{workspace_id}",
-        event_type="agent.health.updated",
-        payload={
-            "agent": agent,
-            "health": "healthy" if status != "failed" else "degraded",
-            "latency": latency,
-            "throughput": throughput,
-        },
-    )
-    # Publish status directly to project extraction stream
-    publish_extraction_event(
-        project_id=project_id,
-        payload={"type": "status", "agent": agent, "status": status},
-    )
-
-
-# ----------------------------------------------------
-# 1. Individual Agent Tasks
-# ----------------------------------------------------
-
-
-@celery_app.task(name="run_web_crawling_task", bind=True, max_retries=3)
-def run_web_crawling_task(
-    self, run_id: str, project_id: str, workspace_id: str, pipeline_id: str
-):
-    """Crawler/Ingestion Agent task executing source file fetch simulations."""
-    db = SessionLocal()
-    try:
-        broadcast_agent_telemetry(
-            workspace_id,
-            project_id,
-            "ingestion",
-            "running",
-            queue_size=1,
-            latency="12ms",
-            throughput="1.2MB/s",
-        )
-        publish_extraction_event(project_id, {"type": "progress", "progress": 5})
-        publish_ws_event(
-            f"workspace:{workspace_id}",
-            "pipeline.progress",
-            {"progress": 5, "pipelineId": pipeline_id, "runId": run_id},
-        )
-
-        log_and_broadcast_agent_log(
-            db,
-            workspace_id,
-            pipeline_id,
-            run_id,
-            project_id,
-            "ingestion",
-            "Connecting to source target REST API gateway...",
-        )
-        time.sleep(0.8)
-
-        dataset = db.query(Dataset).filter(Dataset.id == uuid.UUID(project_id)).first()
-        if dataset and dataset.source_type == "url":
-            log_and_broadcast_agent_log(
-                db,
-                workspace_id,
-                pipeline_id,
-                run_id,
-                project_id,
-                "ingestion",
-                "Fetching URL: https://en.wikipedia.org/wiki/Data_science",
-            )
-            try:
-                r = httpx.get("https://en.wikipedia.org/wiki/Data_science", timeout=5.0)
-                if r.status_code == 200:
-                    log_and_broadcast_agent_log(
-                        db,
-                        workspace_id,
-                        pipeline_id,
-                        run_id,
-                        project_id,
-                        "ingestion",
-                        f"Successfully fetched HTML payload ({len(r.text)} bytes).",
-                    )
-                else:
-                    log_and_broadcast_agent_log(
-                        db,
-                        workspace_id,
-                        pipeline_id,
-                        run_id,
-                        project_id,
-                        "ingestion",
-                        f"HTTP fetch status: {r.status_code}. Using cache.",
-                    )
-            except Exception as e:
-                log_and_broadcast_agent_log(
-                    db,
-                    workspace_id,
-                    pipeline_id,
-                    run_id,
-                    project_id,
-                    "ingestion",
-                    f"Source fetch delay: {str(e)}. Using local cache.",
-                )
-        else:
-            log_and_broadcast_agent_log(
-                db,
-                workspace_id,
-                pipeline_id,
-                run_id,
-                project_id,
-                "ingestion",
-                "Reading raw binary buffers from target connector...",
-            )
-            time.sleep(0.4)
-
-        broadcast_agent_telemetry(
-            workspace_id,
-            project_id,
-            "ingestion",
-            "completed",
-            queue_size=0,
-            latency="24ms",
-            throughput="1.2MB/s",
-        )
-        publish_extraction_event(
-            project_id, {"type": "status", "agent": "ingestion", "status": "completed"}
-        )
-        publish_extraction_event(project_id, {"type": "progress", "progress": 15})
-        publish_ws_event(
-            f"workspace:{workspace_id}",
-            "pipeline.progress",
-            {"progress": 15, "pipelineId": pipeline_id, "runId": run_id},
-        )
-        time.sleep(0.3)
-    except Exception as exc:
-        db.rollback()
-        logger.error(f"Error in Ingestion: {exc}")
-        broadcast_agent_telemetry(workspace_id, project_id, "ingestion", "failed")
-        raise self.retry(exc=exc, countdown=5)
-    finally:
-        db.close()
-
-
-@celery_app.task(name="run_ocr_task", bind=True, max_retries=3)
-def run_ocr_task(
-    self, run_id: str, project_id: str, workspace_id: str, pipeline_id: str
-):
-    """OCR parsing layout processing agent task."""
-    db = SessionLocal()
-    try:
-        broadcast_agent_telemetry(
-            workspace_id,
-            project_id,
-            "ocr",
-            "running",
-            queue_size=2,
-            latency="85ms",
-            throughput="48 docs/s",
-        )
-        publish_extraction_event(project_id, {"type": "progress", "progress": 25})
-        publish_ws_event(
-            f"workspace:{workspace_id}",
-            "pipeline.progress",
-            {"progress": 25, "pipelineId": pipeline_id, "runId": run_id},
-        )
-
-        log_and_broadcast_agent_log(
-            db,
-            workspace_id,
-            pipeline_id,
-            run_id,
-            project_id,
-            "ocr",
-            "Analyzing document bounding layouts...",
-        )
-        time.sleep(0.8)
-        log_and_broadcast_agent_log(
-            db,
-            workspace_id,
-            pipeline_id,
-            run_id,
-            project_id,
-            "ocr",
-            "OCR scanning completes. Extracted layout text layers.",
-        )
-
-        broadcast_agent_telemetry(
-            workspace_id,
-            project_id,
-            "ocr",
-            "completed",
-            queue_size=0,
-            latency="114ms",
-            throughput="48 docs/s",
-        )
-        publish_extraction_event(
-            project_id, {"type": "status", "agent": "ocr", "status": "completed"}
-        )
-        publish_extraction_event(project_id, {"type": "progress", "progress": 35})
-        publish_ws_event(
-            f"workspace:{workspace_id}",
-            "pipeline.progress",
-            {"progress": 35, "pipelineId": pipeline_id, "runId": run_id},
-        )
-        time.sleep(0.3)
-    except Exception as exc:
-        db.rollback()
-        logger.error(f"Error in OCR: {exc}")
-        broadcast_agent_telemetry(workspace_id, project_id, "ocr", "failed")
-        raise self.retry(exc=exc, countdown=5)
-    finally:
-        db.close()
-
-
-@celery_app.task(name="run_extraction_task", bind=True, max_retries=3)
-def run_extraction_task(
-    self, run_id: str, project_id: str, workspace_id: str, pipeline_id: str
-):
-    """Feature / Entities extraction LLM simulation agent task."""
-    db = SessionLocal()
-    try:
-        broadcast_agent_telemetry(
-            workspace_id,
-            project_id,
-            "extractor",
-            "running",
-            queue_size=14,
-            latency="114ms",
-            throughput="2,840 rec/s",
-        )
-        publish_extraction_event(project_id, {"type": "progress", "progress": 45})
-        publish_ws_event(
-            f"workspace:{workspace_id}",
-            "pipeline.progress",
-            {"progress": 45, "pipelineId": pipeline_id, "runId": run_id},
-        )
-
-        log_and_broadcast_agent_log(
-            db,
-            workspace_id,
-            pipeline_id,
-            run_id,
-            project_id,
-            "extractor",
-            "Querying model gpt-4o-mini to extract properties...",
-        )
-        time.sleep(1.0)
-        log_and_broadcast_agent_log(
-            db,
-            workspace_id,
-            pipeline_id,
-            run_id,
-            project_id,
-            "extractor",
-            "Extracted 12 structural entities matching base targets.",
-        )
-
-        broadcast_agent_telemetry(
-            workspace_id,
-            project_id,
-            "extractor",
-            "completed",
-            queue_size=0,
-            latency="24ms",
-            throughput="2,840 rec/s",
-        )
-        publish_extraction_event(
-            project_id, {"type": "status", "agent": "extractor", "status": "completed"}
-        )
-        publish_extraction_event(project_id, {"type": "progress", "progress": 55})
-        publish_ws_event(
-            f"workspace:{workspace_id}",
-            "pipeline.progress",
-            {"progress": 55, "pipelineId": pipeline_id, "runId": run_id},
-        )
-        time.sleep(0.3)
-    except Exception as exc:
-        db.rollback()
-        logger.error(f"Error in Extraction: {exc}")
-        broadcast_agent_telemetry(workspace_id, project_id, "extractor", "failed")
-        raise self.retry(exc=exc, countdown=5)
-    finally:
-        db.close()
-
-
-@celery_app.task(name="run_schema_task", bind=True, max_retries=3)
-def run_schema_task(
-    self, run_id: str, project_id: str, workspace_id: str, pipeline_id: str
-):
-    """Schema analysis and headers mapping agent task."""
-    db = SessionLocal()
-    try:
-        broadcast_agent_telemetry(
-            workspace_id,
-            project_id,
-            "schema",
-            "running",
-            queue_size=1,
-            latency="12ms",
-            throughput="2.4MB/s",
-        )
-        publish_extraction_event(project_id, {"type": "progress", "progress": 65})
-        publish_ws_event(
-            f"workspace:{workspace_id}",
-            "pipeline.progress",
-            {"progress": 65, "pipelineId": pipeline_id, "runId": run_id},
-        )
-
-        log_and_broadcast_agent_log(
-            db,
-            workspace_id,
-            pipeline_id,
-            run_id,
-            project_id,
-            "schema",
-            "Inferring schema types and constraints...",
-        )
-        time.sleep(0.6)
-        log_and_broadcast_agent_log(
-            db,
-            workspace_id,
-            pipeline_id,
-            run_id,
-            project_id,
-            "schema",
-            "Schema aligned. Columns determined: [id, title, value, category, timestamp, quality, score, rank].",
-        )
-
-        broadcast_agent_telemetry(
-            workspace_id,
-            project_id,
-            "schema",
-            "completed",
-            queue_size=0,
-            latency="15ms",
-            throughput="2.4MB/s",
-        )
-        publish_extraction_event(
-            project_id, {"type": "status", "agent": "schema", "status": "completed"}
-        )
-        publish_extraction_event(project_id, {"type": "progress", "progress": 75})
-        publish_ws_event(
-            f"workspace:{workspace_id}",
-            "pipeline.progress",
-            {"progress": 75, "pipelineId": pipeline_id, "runId": run_id},
-        )
-        time.sleep(0.3)
-    except Exception as exc:
-        db.rollback()
-        logger.error(f"Error in Schema task: {exc}")
-        broadcast_agent_telemetry(workspace_id, project_id, "schema", "failed")
-        raise self.retry(exc=exc, countdown=5)
-    finally:
-        db.close()
-
-
-@celery_app.task(name="run_validation_task", bind=True, max_retries=3)
-def run_validation_task(
-    self, run_id: str, project_id: str, workspace_id: str, pipeline_id: str
-):
-    """Validation bounds constraints checks agent task."""
-    db = SessionLocal()
-    try:
-        broadcast_agent_telemetry(
-            workspace_id,
-            project_id,
-            "validator",
-            "running",
-            queue_size=1,
-            latency="8ms",
-            throughput="4.5MB/s",
-        )
-        publish_extraction_event(project_id, {"type": "progress", "progress": 80})
-        publish_ws_event(
-            f"workspace:{workspace_id}",
-            "pipeline.progress",
-            {"progress": 80, "pipelineId": pipeline_id, "runId": run_id},
-        )
-
-        log_and_broadcast_agent_log(
-            db,
-            workspace_id,
-            pipeline_id,
-            run_id,
-            project_id,
-            "validator",
-            "Checking validation rules, null values, and bounds...",
-        )
-        time.sleep(0.8)
-        log_and_broadcast_agent_log(
-            db,
-            workspace_id,
-            pipeline_id,
-            run_id,
-            project_id,
-            "validator",
-            "Null checks complete. Detected 1.2% missing fields in column [score].",
-        )
-
-        broadcast_agent_telemetry(
-            workspace_id,
-            project_id,
-            "validator",
-            "completed",
-            queue_size=0,
-            latency="4ms",
-            throughput="4.5MB/s",
-        )
-        publish_extraction_event(
-            project_id, {"type": "status", "agent": "validator", "status": "completed"}
-        )
-        publish_extraction_event(project_id, {"type": "progress", "progress": 85})
-        publish_ws_event(
-            f"workspace:{workspace_id}",
-            "pipeline.progress",
-            {"progress": 85, "pipelineId": pipeline_id, "runId": run_id},
-        )
-        time.sleep(0.3)
-    except Exception as exc:
-        db.rollback()
-        logger.error(f"Error in Validation: {exc}")
-        broadcast_agent_telemetry(workspace_id, project_id, "validator", "failed")
-        raise self.retry(exc=exc, countdown=5)
-    finally:
-        db.close()
-
-
-@celery_app.task(name="run_cleaning_task", bind=True, max_retries=3)
-def run_cleaning_task(
-    self, run_id: str, project_id: str, workspace_id: str, pipeline_id: str
-):
-    """Auto cleaning normalizations agent task."""
-    db = SessionLocal()
-    try:
-        broadcast_agent_telemetry(
-            workspace_id,
-            project_id,
-            "cleaner",
-            "running",
-            queue_size=1,
-            latency="10ms",
-            throughput="4.2MB/s",
-        )
-        publish_extraction_event(project_id, {"type": "progress", "progress": 90})
-        publish_ws_event(
-            f"workspace:{workspace_id}",
-            "pipeline.progress",
-            {"progress": 90, "pipelineId": pipeline_id, "runId": run_id},
-        )
-
-        log_and_broadcast_agent_log(
-            db,
-            workspace_id,
-            pipeline_id,
-            run_id,
-            project_id,
-            "cleaner",
-            "Imputing missing fields. Normalizing column headers to lowercase...",
-        )
-        time.sleep(0.8)
-        log_and_broadcast_agent_log(
-            db,
-            workspace_id,
-            pipeline_id,
-            run_id,
-            project_id,
-            "cleaner",
-            "Applying string normalization and timestamp cleaning.",
-        )
-
-        broadcast_agent_telemetry(
-            workspace_id,
-            project_id,
-            "cleaner",
-            "completed",
-            queue_size=0,
-            latency="8ms",
-            throughput="4.2MB/s",
-        )
-        publish_extraction_event(
-            project_id, {"type": "status", "agent": "cleaner", "status": "completed"}
-        )
-        publish_extraction_event(project_id, {"type": "progress", "progress": 95})
-        publish_ws_event(
-            f"workspace:{workspace_id}",
-            "pipeline.progress",
-            {"progress": 95, "pipelineId": pipeline_id, "runId": run_id},
-        )
-        time.sleep(0.3)
-    except Exception as exc:
-        db.rollback()
-        logger.error(f"Error in Cleaning: {exc}")
-        broadcast_agent_telemetry(workspace_id, project_id, "cleaner", "failed")
-        raise self.retry(exc=exc, countdown=5)
-    finally:
-        db.close()
-
-
-# ----------------------------------------------------
-# 2. Master Pipeline Orchestrator Task
-# ----------------------------------------------------
 
 
 @celery_app.task(name="run_extraction_pipeline_task", bind=True)
 def run_extraction_pipeline_task(self, run_id: str, project_id: str):
-    """Orchestrates individual agent tasks sequentially, maintaining pipeline state transitions."""
-    logger.info(
-        f"Triggering master pipeline orchestrator for run_id={run_id}, project_id={project_id}"
-    )
+    """Execute the full extraction pipeline for a dataset (project)."""
+    logger.info("Starting pipeline run %s for dataset %s", run_id, project_id)
     db = SessionLocal()
+    workspace_id: str | None = None
+    pipeline_id: str | None = None
+    dataset: Dataset | None = None
+    run: PipelineRun | None = None
 
     try:
-        # Resolve DB references
         dataset = db.query(Dataset).filter(Dataset.id == uuid.UUID(project_id)).first()
         if not dataset:
-            logger.error(f"Dataset {project_id} not found for execution.")
             return {"status": "failed", "error": "Dataset not found"}
-
-        workspace_id: str | None = str(dataset.workspace_id)
-        pipeline = db.query(Pipeline).filter(Pipeline.dataset_id == dataset.id).first()
-        pipeline_id = str(pipeline.id) if pipeline else None
-
         run = db.query(PipelineRun).filter(PipelineRun.id == uuid.UUID(run_id)).first()
         if not run:
-            logger.error(f"PipelineRun {run_id} not found.")
             return {"status": "failed", "error": "PipelineRun not found"}
 
-        # 1. Update states
-        run.status = "running"
+        workspace_id = str(dataset.workspace_id)
+        pipeline = db.query(Pipeline).filter(Pipeline.dataset_id == dataset.id).first()
+        pipeline_id = str(pipeline.id) if pipeline else None
+        config = (pipeline.run_configuration if pipeline else None) or {}
+        target_fields = config.get("target_fields") or config.get("targetFields")
 
+        run.status = "running"
         run.started_at = datetime.now(timezone.utc)
         dataset.status = "Processing"
         db.commit()
 
-        # 2. Broadcast pipeline started
         publish_ws_event(
-            room=f"workspace:{workspace_id}",
-            event_type="pipeline.started",
-            payload={"pipelineId": pipeline_id, "runId": run_id, "status": "running"},
-        )
-        publish_extraction_event(
-            project_id, {"type": "status", "agent": "ingestion", "status": "running"}
+            f"workspace:{workspace_id}",
+            "pipeline.started",
+            {"pipelineId": pipeline_id, "runId": run_id, "status": "running"},
         )
 
-        # 3. Run individual tasks sequentially using synchronous execution (.run)
-        run_web_crawling_task.run(run_id, project_id, workspace_id, pipeline_id)
-        run_ocr_task.run(run_id, project_id, workspace_id, pipeline_id)
-        run_extraction_task.run(run_id, project_id, workspace_id, pipeline_id)
-        run_schema_task.run(run_id, project_id, workspace_id, pipeline_id)
-        run_validation_task.run(run_id, project_id, workspace_id, pipeline_id)
-        run_cleaning_task.run(run_id, project_id, workspace_id, pipeline_id)
+        store = get_object_store()
 
-        # 4. Finalize database states
-        rows = random.randint(1200, 3200)
-        cols = 8
-        quality = random.randint(92, 98)
+        # ---- Stage 1: ingestion ----------------------------------------- #
+        broadcast_agent_telemetry(
+            workspace_id, project_id, "ingestion", "running", queue_size=1
+        )
+        _emit_progress(workspace_id, pipeline_id, run_id, project_id, 5)
+        t0 = time.monotonic()
+        connector = _build_connector(dataset, config, store, db)
+        log_and_broadcast_agent_log(
+            db,
+            workspace_id,
+            pipeline_id,
+            run_id,
+            project_id,
+            "ingestion",
+            "Acquiring source payload...",
+        )
+        raw_documents = connector.fetch()
+        if not raw_documents:
+            raise PipelineError("Source returned no data")
+        raw = raw_documents[0]
+        log_and_broadcast_agent_log(
+            db,
+            workspace_id,
+            pipeline_id,
+            run_id,
+            project_id,
+            "ingestion",
+            f"Fetched {raw.size} bytes from source.",
+        )
+        _record_metrics(db, run_id, "Ingestion", time.monotonic() - t0)
+        broadcast_agent_telemetry(workspace_id, project_id, "ingestion", "completed")
+        _emit_progress(workspace_id, pipeline_id, run_id, project_id, 15)
+
+        # ---- Stage 2: parse (ocr) --------------------------------------- #
+        broadcast_agent_telemetry(
+            workspace_id, project_id, "ocr", "running", queue_size=1
+        )
+        t0 = time.monotonic()
+        parsed = process_raw_document(raw, dataset.source_type or "")
+        detail = (
+            f"Parsed {parsed.primary_table.row_count} rows"
+            if parsed.primary_table
+            else f"Extracted {len(parsed.text)} characters of text"
+        )
+        if parsed.metadata.get("ocr_pages"):
+            detail += f" (OCR on {parsed.metadata['ocr_pages']} page(s))"
+        log_and_broadcast_agent_log(
+            db, workspace_id, pipeline_id, run_id, project_id, "ocr", detail
+        )
+        _record_metrics(db, run_id, "OCR", time.monotonic() - t0)
+        broadcast_agent_telemetry(workspace_id, project_id, "ocr", "completed")
+        _emit_progress(workspace_id, pipeline_id, run_id, project_id, 35)
+
+        # ---- Stage 3: extract (schema infer + extraction) --------------- #
+        broadcast_agent_telemetry(
+            workspace_id, project_id, "extractor", "running", queue_size=1
+        )
+        t0 = time.monotonic()
+        gateway = None
+        if parsed.primary_table is None:
+            gateway = get_gateway()  # only documents need the LLM
+        schema = infer_schema(
+            parsed,
+            target_fields=target_fields,
+            gateway=gateway,
+            workspace_id=workspace_id,
+            run_id=run_id,
+        )
+        records = extract_records(
+            parsed,
+            schema,
+            gateway=gateway,
+            workspace_id=workspace_id,
+            run_id=run_id,
+        )
+        log_and_broadcast_agent_log(
+            db,
+            workspace_id,
+            pipeline_id,
+            run_id,
+            project_id,
+            "extractor",
+            f"Extracted {len(records)} records across {len(schema.fields)} fields.",
+        )
+        _record_metrics(
+            db, run_id, "Extraction", time.monotonic() - t0, records=len(records)
+        )
+        broadcast_agent_telemetry(workspace_id, project_id, "extractor", "completed")
+        _emit_progress(workspace_id, pipeline_id, run_id, project_id, 65)
+
+        # ---- Stage 4: schema -------------------------------------------- #
+        broadcast_agent_telemetry(
+            workspace_id, project_id, "schema", "running", queue_size=1
+        )
+        t0 = time.monotonic()
+        dataset.schema_config = schema.to_dict()
+        db.commit()
+        log_and_broadcast_agent_log(
+            db,
+            workspace_id,
+            pipeline_id,
+            run_id,
+            project_id,
+            "schema",
+            f"Schema locked: [{', '.join(schema.names)}].",
+        )
+        _record_metrics(db, run_id, "Schema", time.monotonic() - t0)
+        broadcast_agent_telemetry(workspace_id, project_id, "schema", "completed")
+        _emit_progress(workspace_id, pipeline_id, run_id, project_id, 75)
+
+        # ---- Stage 5: validate ------------------------------------------ #
+        broadcast_agent_telemetry(
+            workspace_id, project_id, "validator", "running", queue_size=1
+        )
+        t0 = time.monotonic()
+        validation = validate_and_profile(records, schema)
+        db.query(DatasetColumn).filter(DatasetColumn.dataset_id == dataset.id).delete()
+        for profile in validation.column_profiles:
+            db.add(
+                DatasetColumn(
+                    dataset_id=dataset.id,
+                    name=profile.name,
+                    dtype=profile.dtype,
+                    null_rate=round(profile.null_rate, 2),
+                    unique_count=profile.unique_count,
+                    sample_values=[str(v) for v in profile.sample_values],
+                    status=profile.status,
+                )
+            )
+        db.commit()
+        log_and_broadcast_agent_log(
+            db,
+            workspace_id,
+            pipeline_id,
+            run_id,
+            project_id,
+            "validator",
+            f"Quality score {validation.quality_score:.1f}% across {validation.record_count} records.",
+        )
+        _record_metrics(
+            db, run_id, "Validation", time.monotonic() - t0, records=len(records)
+        )
+        broadcast_agent_telemetry(workspace_id, project_id, "validator", "completed")
+        _emit_progress(workspace_id, pipeline_id, run_id, project_id, 85)
+
+        # ---- Stage 6: write artifact (cleaner) -------------------------- #
+        broadcast_agent_telemetry(
+            workspace_id, project_id, "cleaner", "running", queue_size=1
+        )
+        t0 = time.monotonic()
+        artifact = write_dataset(
+            store,
+            records,
+            schema,
+            workspace_id=workspace_id,
+            dataset_id=str(dataset.id),
+            run_id=run_id,
+        )
+        db.query(DataArtifact).filter(
+            DataArtifact.dataset_id == dataset.id, DataArtifact.run_id == run.id
+        ).delete()
+        db.add(
+            DataArtifact(
+                dataset_id=dataset.id,
+                run_id=run.id,
+                storage_key=artifact.storage_key,
+                format=artifact.format,
+                row_count=artifact.row_count,
+                column_count=artifact.column_count,
+                byte_size=artifact.byte_size,
+            )
+        )
+        log_and_broadcast_agent_log(
+            db,
+            workspace_id,
+            pipeline_id,
+            run_id,
+            project_id,
+            "cleaner",
+            f"Wrote {artifact.row_count} rows to columnar store ({artifact.byte_size} bytes).",
+        )
+        _record_metrics(
+            db, run_id, "Cleaning", time.monotonic() - t0, records=artifact.row_count
+        )
+        broadcast_agent_telemetry(workspace_id, project_id, "cleaner", "completed")
+
+        # ---- Finalize --------------------------------------------------- #
+        rows = artifact.row_count
+        cols = artifact.column_count
+        quality = float(validation.quality_score)
 
         dataset.status = "Ready"
         dataset.record_count = rows
         dataset.column_count = cols
-        dataset.quality_score = float(quality)
+        dataset.quality_score = quality
+        dataset.s3_path = artifact.storage_key
         dataset.updated_at = datetime.now(timezone.utc)
 
         run.status = "completed"
         run.records_processed = rows
-
-        started_at = run.started_at
-        if started_at:
-            if started_at.tzinfo is None:
-                started_at = started_at.replace(tzinfo=timezone.utc)
-            duration_seconds = int(
-                (datetime.now(timezone.utc) - started_at).total_seconds()
-            )
-        else:
-            duration_seconds = 0
-
-        run.duration_seconds = duration_seconds
+        started = run.started_at
+        if started and started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        run.duration_seconds = (
+            int((datetime.now(timezone.utc) - started).total_seconds())
+            if started
+            else 0
+        )
         run.finished_at = datetime.now(timezone.utc)
-
         db.commit()
 
-        # 5. Broadcast completion telemetries
         publish_ws_event(
-            room=f"workspace:{workspace_id}",
-            event_type="pipeline.completed",
-            payload={
+            f"workspace:{workspace_id}",
+            "pipeline.completed",
+            {
                 "pipelineId": pipeline_id,
                 "runId": run_id,
                 "rowCount": rows,
@@ -693,9 +396,9 @@ def run_extraction_pipeline_task(self, run_id: str, project_id: str):
             },
         )
         publish_ws_event(
-            room=f"workspace:{workspace_id}",
-            event_type="dataset.generated",
-            payload={
+            f"workspace:{workspace_id}",
+            "dataset.generated",
+            {
                 "datasetId": project_id,
                 "name": dataset.name,
                 "rowCount": rows,
@@ -704,70 +407,48 @@ def run_extraction_pipeline_task(self, run_id: str, project_id: str):
             },
         )
         publish_extraction_event(
-            project_id=project_id,
-            payload={
+            project_id,
+            {
                 "type": "completed",
                 "row_count": rows,
                 "column_count": cols,
                 "quality_score": quality,
             },
         )
+        _emit_progress(workspace_id, pipeline_id, run_id, project_id, 100)
+        return {"status": "completed", "run_id": run_id, "rows": rows}
 
-        return {"status": "completed", "run_id": run_id}
-
-    except Exception as e:
+    except Exception as exc:  # noqa: BLE001 - all failures surfaced to the user
         db.rollback()
-        logger.error(f"Pipeline orchestrator execution failed: {e}")
-
-        # Extract context attributes if possible
-        try:
-            workspace_id = str(dataset.workspace_id) if dataset else None
-            pipeline_id = str(pipeline.id) if pipeline else None
-        except Exception:
-            workspace_id = None
-            pipeline_id = None
-
-        if workspace_id:
-            publish_ws_event(
-                room=f"workspace:{workspace_id}",
-                event_type="pipeline.failed",
-                payload={
-                    "pipelineId": pipeline_id,
-                    "runId": run_id,
-                    "errorMessage": str(e),
-                },
-            )
-
-        publish_extraction_event(
-            project_id=project_id,
-            payload={
-                "type": "failed",
-                "message": f"Pipeline execution error: {str(e)}",
-            },
-        )
-
-        # Update DB structures as failed
-        try:
-            dataset = (
-                db.query(Dataset).filter(Dataset.id == uuid.UUID(project_id)).first()
-            )
-            if dataset:
-                dataset.status = "Failed"
-                dataset.updated_at = datetime.now(timezone.utc)
-
-            run = (
-                db.query(PipelineRun)
-                .filter(PipelineRun.id == uuid.UUID(run_id))
-                .first()
-            )
-            if run:
-                run.status = "failed"
-                run.error_message = str(e)
-                run.finished_at = datetime.now(timezone.utc)
-            db.commit()
-        except Exception as db_err:
-            logger.error(f"Failed to set database error status: {db_err}")
-
-        return {"status": "failed", "error": str(e)}
+        logger.error("Pipeline run %s failed: %s", run_id, exc)
+        _fail(db, project_id, run_id, workspace_id, pipeline_id, str(exc))
+        return {"status": "failed", "error": str(exc)}
     finally:
         db.close()
+
+
+def _fail(db, project_id, run_id, workspace_id, pipeline_id, message: str) -> None:
+    if workspace_id:
+        publish_ws_event(
+            f"workspace:{workspace_id}",
+            "pipeline.failed",
+            {"pipelineId": pipeline_id, "runId": run_id, "errorMessage": message},
+        )
+    publish_extraction_event(
+        project_id,
+        {"type": "failed", "message": f"Pipeline execution error: {message}"},
+    )
+    try:
+        dataset = db.query(Dataset).filter(Dataset.id == uuid.UUID(project_id)).first()
+        if dataset:
+            dataset.status = "Failed"
+            dataset.updated_at = datetime.now(timezone.utc)
+        run = db.query(PipelineRun).filter(PipelineRun.id == uuid.UUID(run_id)).first()
+        if run:
+            run.status = "failed"
+            run.error_message = message
+            run.finished_at = datetime.now(timezone.utc)
+        db.commit()
+    except Exception as db_err:  # noqa: BLE001
+        logger.error("Failed to persist failure state: %s", db_err)
+        db.rollback()
