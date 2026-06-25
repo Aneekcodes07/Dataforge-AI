@@ -72,6 +72,11 @@ class Settings(BaseSettings):
     LLM_REQUEST_TIMEOUT: float = 60.0
     LLM_MAX_RETRIES: int = 2
 
+    # RAG / semantic search
+    RAG_TOP_K: int = 5
+    RAG_CHUNK_CHARS: int = 1200
+    RAG_CHUNK_OVERLAP: int = 150
+
     # Monitoring
     SENTRY_DSN: str = ""
 

@@ -26,7 +26,7 @@ from src.auth.models import WorkspaceMembership, User, Workspace, Team, APIKey, 
 from src.datasets.models import Dataset, SourceFile, DataArtifact, DatasetColumn
 from src.pipelines.models import Pipeline, PipelineRun
 from src.monitoring.models import AgentMetrics, Notification, ActivityLog, AuditEvent
-from src.ai.models import LLMUsageEvent
+from src.ai.models import LLMUsageEvent, DocumentChunk
 
 target_metadata = Base.metadata
 

@@ -1,9 +1,9 @@
 version: '3.8'
 
 services:
-  # 1. PostgreSQL Production Database
+  # 1. PostgreSQL Production Database (with pgvector for embeddings/RAG)
   postgres:
-    image: postgres:15-alpine
+    image: pgvector/pgvector:pg15
     container_name: dataforge-postgres
     restart: always
     environment:

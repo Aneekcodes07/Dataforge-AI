@@ -33,3 +33,6 @@ openpyxl>=3.1.0
 # --- Tabular data + columnar artifacts ---
 pandas>=2.2.0
 pyarrow>=16.0.0
+
+# --- Vector search (RAG) ---
+pgvector>=0.2.5

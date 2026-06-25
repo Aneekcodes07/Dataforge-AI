@@ -25,6 +25,7 @@ from src.agents.telemetry import (
     log_and_broadcast_agent_log,
 )
 from src.ai.llm import get_gateway
+from src.ai.rag import get_vector_store, index_parsed_document
 from src.celery_app import celery_app
 from src.core.database import SessionLocal
 from src.core.redis_pubsub import publish_extraction_event, publish_ws_event
@@ -331,6 +332,31 @@ def run_extraction_pipeline_task(self, run_id: str, project_id: str):
             db, run_id, "Cleaning", time.monotonic() - t0, records=artifact.row_count
         )
         broadcast_agent_telemetry(workspace_id, project_id, "cleaner", "completed")
+
+        # Best-effort: index the dataset for semantic search / Copilot RAG.
+        # Indexing failures (e.g. no embedding provider configured) must never
+        # fail the user's extraction run.
+        try:
+            embed_gateway = gateway or get_gateway()
+            indexed = index_parsed_document(
+                vector_store=get_vector_store(),
+                gateway=embed_gateway,
+                workspace_id=workspace_id,
+                dataset_id=str(dataset.id),
+                parsed=parsed,
+            )
+            if indexed:
+                log_and_broadcast_agent_log(
+                    db,
+                    workspace_id,
+                    pipeline_id,
+                    run_id,
+                    project_id,
+                    "cleaner",
+                    f"Indexed {indexed} chunks for semantic search.",
+                )
+        except Exception as index_err:  # noqa: BLE001 - indexing is best-effort
+            logger.warning("Indexing skipped for dataset %s: %s", dataset.id, index_err)
 
         # ---- Finalize --------------------------------------------------- #
         rows = artifact.row_count
