@@ -8,9 +8,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
 import json
 
-from src.core.database import Base, engine, get_db
+from src.core.database import get_db
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-# Import all models to register them on Base.metadata
 
 from src.auth.router import router as auth_router
 from src.projects.router import router as projects_router
@@ -31,8 +30,10 @@ from src.core.config import get_settings
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize SQL database tables
-    Base.metadata.create_all(bind=engine)
+    # NOTE: Database schema is managed exclusively by Alembic migrations
+    # (see backend/entrypoint.sh which runs `alembic upgrade head` on startup).
+    # We intentionally do NOT call Base.metadata.create_all() here so that the
+    # migration history remains the single source of truth for the schema.
     # Start background Redis Pub/Sub WebSocket bridge
     import asyncio
 
@@ -53,13 +54,25 @@ def create_app() -> FastAPI:
     init_sentry()
 
     settings = get_settings()
-    # Startup validation checking for default developer keys in production
-    if (
-        not settings.DEBUG
-        and settings.SECRET_KEY == "dev-secret-key-change-in-production"
+    # Fail fast in production if the JWT signing secret is missing, too short,
+    # or one of the well-known placeholder values shipped in templates/examples.
+    # This guard is intentionally independent of any single literal so that
+    # weak defaults can never silently reach a production deployment.
+    _INSECURE_SECRETS = {
+        "",
+        "dev-secret-key-change-in-production",
+        "prod-secret-key-change-in-production",
+        "changeme",
+        "secret",
+        "your-secret-key",
+    }
+    if not settings.DEBUG and (
+        settings.SECRET_KEY in _INSECURE_SECRETS or len(settings.SECRET_KEY) < 32
     ):
         raise RuntimeError(
-            "CRITICAL SECURITY ERROR: SECRET_KEY must be changed in production environments."
+            "CRITICAL SECURITY ERROR: SECRET_KEY must be set to a strong, unique "
+            "value of at least 32 characters in production. Refusing to start with "
+            "a missing or well-known placeholder secret."
         )
 
     app = FastAPI(

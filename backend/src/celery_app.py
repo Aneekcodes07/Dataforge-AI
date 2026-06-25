@@ -40,17 +40,22 @@ celery_app.conf.task_queues = (
     Queue("dead_letter", routing_key="dead_letter"),
 )
 
-# Configure task routing
+# Configure task routing.
+# IMPORTANT: keys MUST match the `name=` registered on each @celery_app.task.
+# Heavy, long-running pipeline/agent work goes to `heavy_ops`; fast,
+# latency-sensitive bookkeeping goes to `high_priority`.
 celery_app.conf.task_routes = {
-    "run_ocr_agent": {"queue": "heavy_ops"},
-    "run_extraction_agent": {"queue": "heavy_ops"},
-    "run_validation_agent": {"queue": "heavy_ops"},
-    "run_cleaning_agent": {"queue": "heavy_ops"},
-    "run_eda_agent": {"queue": "heavy_ops"},
-    "run_export_agent": {"queue": "heavy_ops"},
-    "run_web_crawling_task": {"queue": "heavy_ops"},
+    # Pipeline orchestrator + individual agent stages (src/agents/tasks.py)
     "run_extraction_pipeline_task": {"queue": "heavy_ops"},
-    "run_copilot_analysis_task": {"queue": "heavy_ops"},
+    "run_web_crawling_task": {"queue": "heavy_ops"},
+    "run_ocr_task": {"queue": "heavy_ops"},
+    "run_extraction_task": {"queue": "heavy_ops"},
+    "run_schema_task": {"queue": "heavy_ops"},
+    "run_validation_task": {"queue": "heavy_ops"},
+    "run_cleaning_task": {"queue": "heavy_ops"},
+    # Copilot query processing (src/copilot/tasks.py)
+    "run_copilot_query_task": {"queue": "heavy_ops"},
+    # Notifications, activity feed, and health (src/monitoring/tasks.py)
     "process_notification_task": {"queue": "high_priority"},
     "log_activity_task": {"queue": "high_priority"},
     "celery_health_check": {"queue": "high_priority"},

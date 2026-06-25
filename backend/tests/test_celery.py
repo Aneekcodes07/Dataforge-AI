@@ -14,6 +14,10 @@ from src.monitoring.models import AgentMetrics, ActivityLog
 from src.monitoring.tasks import celery_health_check
 from src.agents.tasks import run_extraction_pipeline_task, run_ocr_task
 
+# Import task modules for their side effect of registering tasks on the Celery
+# app, so the routing drift-guard in test_celery_task_routing can see them all.
+import src.copilot.tasks  # noqa: F401
+
 
 @pytest.fixture(autouse=True)
 def mock_redis():
@@ -36,14 +40,31 @@ def db():
 
 
 def test_celery_task_routing():
-    """Verify tasks are routed to their designated queues."""
+    """Verify tasks are routed to their designated queues.
+
+    Keys must match the registered Celery task names exactly; a mismatch
+    silently sends tasks to the default queue instead of the intended one.
+    """
     routes = celery_app.conf.task_routes
-    assert routes["run_ocr_agent"] == {"queue": "heavy_ops"}
-    assert routes["run_web_crawling_task"] == {"queue": "heavy_ops"}
+    # Heavy, long-running pipeline/agent work.
     assert routes["run_extraction_pipeline_task"] == {"queue": "heavy_ops"}
+    assert routes["run_web_crawling_task"] == {"queue": "heavy_ops"}
+    assert routes["run_ocr_task"] == {"queue": "heavy_ops"}
+    assert routes["run_extraction_task"] == {"queue": "heavy_ops"}
+    assert routes["run_schema_task"] == {"queue": "heavy_ops"}
+    assert routes["run_validation_task"] == {"queue": "heavy_ops"}
+    assert routes["run_cleaning_task"] == {"queue": "heavy_ops"}
+    assert routes["run_copilot_query_task"] == {"queue": "heavy_ops"}
+    # Fast, latency-sensitive bookkeeping.
     assert routes["process_notification_task"] == {"queue": "high_priority"}
     assert routes["log_activity_task"] == {"queue": "high_priority"}
     assert routes["celery_health_check"] == {"queue": "high_priority"}
+
+    # Every routed key must correspond to a real, registered task name so the
+    # routing table can never drift from the task definitions again.
+    registered = set(celery_app.tasks.keys())
+    for task_name in routes:
+        assert task_name in registered, f"Route references unknown task: {task_name}"
 
 
 def test_health_check_task():

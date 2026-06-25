@@ -35,7 +35,7 @@ jobs:
         run: npm ci
 
       - name: Run ESLint
-        run: npm run lint || true
+        run: npm run lint
 
       - name: Show TypeScript Version
         run: npx tsc -v

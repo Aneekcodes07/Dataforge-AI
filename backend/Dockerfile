@@ -36,11 +36,15 @@ ENV PORT=8000
 # Run under a non-privileged user for hardening
 RUN groupadd -g 10001 dataforge && \
     useradd -u 10001 -g dataforge -m -d /home/dataforge dataforge && \
+    chmod +x /app/entrypoint.sh && \
     chown -R dataforge:dataforge /app
 
 USER dataforge
 
 EXPOSE 8000
+
+# Apply migrations (when RUN_MIGRATIONS=true) then run the given command.
+ENTRYPOINT ["/app/entrypoint.sh"]
 
 # Run API Server
 CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]

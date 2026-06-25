@@ -60,8 +60,13 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://dataforge:secure_pass@postgres:5432/dataforge_ai}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      # SECRET_KEY MUST be overridden with a strong, unique value (>=32 chars),
+      # e.g. `openssl rand -hex 32`. With DEBUG=false the API refuses to start
+      # while this placeholder is in use (see src/main.py startup guard).
       SECRET_KEY: ${SECRET_KEY:-prod-secret-key-change-in-production}
-      JWT_SECRET: ${JWT_SECRET:-prod-jwt-secret-key-change-in-production}
+      DEBUG: ${DEBUG:-false}
+      # Only the API applies migrations on startup; workers/beat must not race.
+      RUN_MIGRATIONS: "true"
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       GEMINI_API_KEY: ${GEMINI_API_KEY}
